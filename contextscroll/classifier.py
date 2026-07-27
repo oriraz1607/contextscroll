@@ -141,6 +141,11 @@ BROWSER_APPLICATION_MARKERS = {
     "zen browser",
 }
 
+LIBREOFFICE_APPLICATION_MARKERS = {
+    "libreoffice",
+    "soffice",
+}
+
 ACTIVATION_ACTIONS = {
     "activate",
     "click",
@@ -154,6 +159,9 @@ ACTIVATION_ACTIONS = {
 ACTION_CONTAINER_ROLES = {
     "application",
     "document frame",
+    "document presentation",
+    "document spreadsheet",
+    "document text",
     "document web",
     "frame",
     "internal frame",
@@ -164,10 +172,8 @@ ACTION_CONTAINER_ROLES = {
 }
 
 
-def is_native_target(node: SemanticNode) -> bool:
+def is_explicit_native_target(node: SemanticNode) -> bool:
     if node.role in NATIVE_ROLES:
-        return True
-    if "editable" in node.states:
         return True
     if node.attributes.get("tag") == "a":
         return True
@@ -182,9 +188,23 @@ def is_native_target(node: SemanticNode) -> bool:
     return bool(node.actions & ACTIVATION_ACTIONS)
 
 
+def is_native_target(node: SemanticNode) -> bool:
+    return "editable" in node.states or is_explicit_native_target(node)
+
+
 def is_browser_application(application: str) -> bool:
     name = normalize(application)
     return any(marker in name for marker in BROWSER_APPLICATION_MARKERS)
+
+
+def is_libreoffice_writer(
+    chain: tuple[SemanticNode, ...], application: str
+) -> bool:
+    name = normalize(application)
+    return (
+        any(marker in name for marker in LIBREOFFICE_APPLICATION_MARKERS)
+        and any(node.role == "document text" for node in chain)
+    )
 
 
 def classify_chain(
@@ -198,6 +218,14 @@ def classify_chain(
     """
 
     chain = tuple(nodes)
+    if is_libreoffice_writer(chain, application):
+        # Writer exposes its document body as editable text. A blanket
+        # editable rule would preserve primary-selection paste and prevent
+        # autoscroll everywhere in the page. Ignore editable only within the
+        # Writer document ancestry; real controls and links remain native.
+        if any(is_explicit_native_target(node) for node in chain):
+            return Decision.NATIVE
+        return Decision.SCROLL
     if any(is_native_target(node) for node in chain):
         return Decision.NATIVE
     if any(node.role in SCROLL_ROLES for node in chain):

@@ -7,6 +7,10 @@ it. A middle click on a tab, link, button, or editable field is delivered to
 the application immediately. A middle click on a document or scrollable view
 starts autoscroll.
 
+The semantic policy also covers LibreOffice Writer document bodies and
+standard desktop scroll surfaces such as directory panes, lists, tables,
+trees, and scroll panes. Writer links and toolbar controls remain native.
+
 There is no hold threshold, click timeout, or latency parameter.
 
 ## How it works

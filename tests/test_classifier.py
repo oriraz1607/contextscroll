@@ -115,6 +115,72 @@ class ClassifierTests(unittest.TestCase):
             Decision.UNKNOWN,
         )
 
+    def test_libreoffice_writer_editable_body_is_scroll(self):
+        chain = [
+            self.node("paragraph", states=["editable"]),
+            self.node("document text", states=["editable"]),
+            self.node("scroll pane"),
+            self.node("frame"),
+        ]
+        for application in ("soffice", "LibreOffice Writer"):
+            with self.subTest(application=application):
+                self.assertEqual(
+                    classify_chain(chain, application),
+                    Decision.SCROLL,
+                )
+
+    def test_libreoffice_writer_link_remains_native(self):
+        chain = [
+            self.node("text", states=["editable"]),
+            self.node("link", actions=["jump"]),
+            self.node("paragraph", states=["editable"]),
+            self.node("document text", states=["editable"]),
+        ]
+        self.assertEqual(
+            classify_chain(chain, "soffice"),
+            Decision.NATIVE,
+        )
+
+    def test_libreoffice_toolbar_entry_remains_native(self):
+        chain = [
+            self.node("text", states=["editable"]),
+            self.node("combo box"),
+            self.node("tool bar"),
+            self.node("frame"),
+        ]
+        self.assertEqual(
+            classify_chain(chain, "soffice"),
+            Decision.NATIVE,
+        )
+
+    def test_editable_document_outside_writer_remains_native(self):
+        chain = [
+            self.node("paragraph", states=["editable"]),
+            self.node("document text", states=["editable"]),
+        ]
+        self.assertEqual(
+            classify_chain(chain, "Text Editor"),
+            Decision.NATIVE,
+        )
+
+    def test_standard_application_scroll_surfaces(self):
+        for role in (
+            "directory pane",
+            "list",
+            "scroll pane",
+            "table",
+            "tree",
+            "tree table",
+            "viewport",
+        ):
+            with self.subTest(role=role):
+                self.assertEqual(
+                    classify_chain(
+                        [self.node("label"), self.node(role), self.node("frame")]
+                    ),
+                    Decision.SCROLL,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
