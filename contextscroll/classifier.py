@@ -29,6 +29,7 @@ class SemanticNode:
     actions: frozenset[str] = field(default_factory=frozenset)
     attributes: Mapping[str, str] = field(default_factory=dict)
     name: str = ""
+    hyperlink_target: bool = False
 
     @classmethod
     def create(
@@ -38,6 +39,7 @@ class SemanticNode:
         actions: Iterable[str] = (),
         attributes: Mapping[str, str] | None = None,
         name: str = "",
+        hyperlink_target: bool = False,
     ) -> "SemanticNode":
         return cls(
             role=normalize(role),
@@ -48,6 +50,7 @@ class SemanticNode:
                 for key, value in (attributes or {}).items()
             },
             name=name[:160],
+            hyperlink_target=bool(hyperlink_target),
         )
 
 
@@ -121,6 +124,7 @@ BROWSER_CONTENT_ROLES = {
     "canvas",
     "heading",
     "image",
+    "landmark",
     "paragraph",
     "section",
     "static",
@@ -223,14 +227,18 @@ ACTION_CONTAINER_ROLES = {
     "document web",
     "frame",
     "internal frame",
+    "landmark",
     "panel",
     "scroll pane",
     "section",
+    "video",
     "window",
 }
 
 
 def is_explicit_native_target(node: SemanticNode) -> bool:
+    if node.hyperlink_target:
+        return True
     if node.role in NATIVE_ROLES:
         return True
     if node.attributes.get("tag") == "a":

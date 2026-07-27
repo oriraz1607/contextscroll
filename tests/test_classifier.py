@@ -65,6 +65,24 @@ class ClassifierTests(unittest.TestCase):
         ]
         self.assertEqual(classify_chain(chain), Decision.NATIVE)
 
+    def test_resolved_hyperlink_target_is_native_without_link_role(self):
+        chain = [
+            self.node(
+                "image",
+                actions=["clickancestor"],
+                hyperlink_target=True,
+            ),
+            self.node("document web"),
+        ]
+        self.assertEqual(classify_chain(chain), Decision.NATIVE)
+
+    def test_non_link_image_remains_scrollable(self):
+        chain = [
+            self.node("image", actions=["clickancestor"]),
+            self.node("document web"),
+        ]
+        self.assertEqual(classify_chain(chain), Decision.SCROLL)
+
     def test_chromium_section_is_browser_content(self):
         chain = [
             self.node("section"),
@@ -106,6 +124,28 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(
             classify_chain(chain, "Google Chrome"),
             Decision.NATIVE,
+        )
+
+    def test_chromium_generic_video_click_is_scroll(self):
+        chain = [
+            self.node("video", actions=["click"]),
+            self.node("section", actions=["click"]),
+            self.node("document web"),
+        ]
+        self.assertEqual(
+            classify_chain(chain, "Brave Browser"),
+            Decision.SCROLL,
+        )
+
+    def test_chromium_generic_landmark_click_is_scroll(self):
+        chain = [
+            self.node("landmark", actions=["click"]),
+            self.node("panel"),
+            self.node("frame"),
+        ]
+        self.assertEqual(
+            classify_chain(chain, "Google Chrome"),
+            Decision.SCROLL,
         )
 
     def test_generic_section_outside_browser_remains_unknown(self):

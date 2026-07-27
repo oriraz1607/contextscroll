@@ -16,9 +16,15 @@ import socket
 import threading
 import time
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
-from .classifier import Decision, SemanticNode, classify_chain
+from .classifier import (
+    Decision,
+    SemanticNode,
+    classify_chain,
+    is_browser_application,
+    normalize,
+)
 from .pointer import GnomeShellPointer, PointerUnavailable, X11Pointer
 from .protocol import MAX_LINE_BYTES, ContextReport, decode_activity, encode
 
@@ -28,9 +34,15 @@ DEFAULT_SOCKET = "/run/contextscroll/context.sock"
 HEARTBEAT_SECONDS = 0.20
 STATE_POLL_SECONDS = 0.05
 MIN_QUERY_INTERVAL = 1.0 / 30.0
+UNKNOWN_RETRY_INITIAL_SECONDS = 0.075
+UNKNOWN_RETRY_MAX_SECONDS = 1.0
 POINTER_SAMPLE_MILLISECONDS = 8
 MAX_ANCESTORS = 32
 MAX_DESCENT = 24
+MAX_LINK_CONTAINER_ANCESTORS = 8
+MAX_LINK_DESCENDANTS = 64
+MAX_LINK_DESCENT = 6
+MAX_LINK_CONTAINER_AREA_RATIO = 0.35
 
 
 def _load_atspi():
@@ -237,6 +249,94 @@ class AccessibilityTree:
                 continue
             if child is not None:
                 yield child
+
+    @staticmethod
+    def _is_hyperlink(accessible) -> bool:
+        try:
+            role = normalize(accessible.get_role_name() or "")
+        except Exception:
+            role = ""
+        if role == "link":
+            return True
+        try:
+            attributes = {
+                normalize(str(key)): normalize(str(value))
+                for key, value in (accessible.get_attributes() or {}).items()
+            }
+        except Exception:
+            return False
+        if attributes.get("tag") == "a":
+            return True
+        return "link" in attributes.get("xml roles", "").split()
+
+    def _has_hyperlink_descendant(self, accessible) -> bool:
+        queue = [
+            (child, 1)
+            for child in self._children(
+                accessible, maximum=MAX_LINK_DESCENDANTS
+            )
+        ]
+        visited = 0
+        while queue and visited < MAX_LINK_DESCENDANTS:
+            candidate, depth = queue.pop(0)
+            visited += 1
+            if self._is_hyperlink(candidate):
+                return True
+            if depth < MAX_LINK_DESCENT:
+                remaining = MAX_LINK_DESCENDANTS - visited - len(queue)
+                if remaining > 0:
+                    queue.extend(
+                        (child, depth + 1)
+                        for child in self._children(
+                            candidate, maximum=remaining
+                        )
+                    )
+        return False
+
+    def _is_compact_link_container(
+        self, accessible, top_level
+    ) -> bool:
+        try:
+            container = accessible.get_component_iface().get_extents(
+                self.atspi.CoordType.SCREEN
+            )
+            window = top_level.get_component_iface().get_extents(
+                self.atspi.CoordType.SCREEN
+            )
+        except Exception:
+            return False
+        container_area = container.width * container.height
+        window_area = window.width * window.height
+        return (
+            container_area > 0
+            and window_area > 0
+            and container_area
+            <= window_area * MAX_LINK_CONTAINER_AREA_RATIO
+        )
+
+    def _mark_linked_click_target(
+        self,
+        accessibles,
+        nodes: list[SemanticNode],
+        application: str,
+        top_level,
+    ) -> None:
+        if not is_browser_application(application):
+            return
+        for index, (accessible, node) in enumerate(
+            zip(accessibles, nodes, strict=False)
+        ):
+            if index >= MAX_LINK_CONTAINER_ANCESTORS:
+                break
+            if "click" not in node.actions:
+                continue
+            if not self._is_compact_link_container(
+                accessible, top_level
+            ):
+                continue
+            if self._has_hyperlink_descendant(accessible):
+                nodes[index] = replace(node, hyperlink_target=True)
+                return
 
     def _contains(self, accessible, x: int, y: int) -> bool:
         try:
@@ -451,7 +551,11 @@ class AccessibilityTree:
             application_name = app.get_name() or ""
         except Exception:
             pass
-        return [self.node(item) for item in accessibles], application_name
+        nodes = [self.node(item) for item in accessibles]
+        self._mark_linked_click_target(
+            accessibles, nodes, application_name, top_level
+        )
+        return nodes, application_name
 
     def report_at(self, x: int, y: int, window=None) -> ContextReport:
         try:
@@ -574,6 +678,8 @@ class ContextWorker(threading.Thread):
         generation = -1
         last_query = 0.0
         next_send = 0.0
+        next_unknown_retry = 0.0
+        unknown_retry_interval = UNKNOWN_RETRY_INITIAL_SECONDS
         while not self.stop_event.is_set():
             x, y, current_generation, window = self.points.wait(
                 generation, STATE_POLL_SECONDS
@@ -584,7 +690,19 @@ class ContextWorker(threading.Thread):
             if changed and (x is None or y is None):
                 generation = current_generation
                 changed = False
-            if changed and x is not None and y is not None:
+            retry_unknown = (
+                not changed
+                and x is not None
+                and y is not None
+                and self.last_report.decision == Decision.UNKNOWN
+                and now >= next_unknown_retry
+            )
+            queried = False
+            if (
+                (changed or retry_unknown)
+                and x is not None
+                and y is not None
+            ):
                 remaining = MIN_QUERY_INTERVAL - (now - last_query)
                 if remaining > 0 and self.stop_event.wait(remaining):
                     break
@@ -596,6 +714,23 @@ class ContextWorker(threading.Thread):
                 self.last_report = self.tree.report_at(x, y, window)
                 last_query = time.monotonic()
                 generation = current_generation
+                queried = True
+                if self.last_report.decision == Decision.UNKNOWN:
+                    if retry_unknown:
+                        unknown_retry_interval = min(
+                            unknown_retry_interval * 2,
+                            UNKNOWN_RETRY_MAX_SECONDS,
+                        )
+                    else:
+                        unknown_retry_interval = (
+                            UNKNOWN_RETRY_INITIAL_SECONDS
+                        )
+                    next_unknown_retry = (
+                        last_query + unknown_retry_interval
+                    )
+                else:
+                    unknown_retry_interval = UNKNOWN_RETRY_INITIAL_SECONDS
+                    next_unknown_retry = 0.0
                 log.debug(
                     "context %s role=%r app=%r at %d,%d",
                     self.last_report.decision,
@@ -604,7 +739,7 @@ class ContextWorker(threading.Thread):
                     x,
                     y,
                 )
-            if changed or time.monotonic() >= next_send:
+            if queried or time.monotonic() >= next_send:
                 self._send()
                 self._receive_activity()
                 next_send = time.monotonic() + HEARTBEAT_SECONDS
