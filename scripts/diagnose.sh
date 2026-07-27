@@ -29,6 +29,9 @@ else
 fi
 check "uinput device available" test -e /dev/uinput
 check "system daemon active" systemctl is-active --quiet contextscroll.service
+daemon_user=$(systemctl show contextscroll.service --property=User --value \
+    2>/dev/null)
+check "system daemon unprivileged" test "$daemon_user" = contextscroll
 check "session helper active" systemctl --user is-active --quiet \
     contextscroll-context.service
 check "context socket present" test -S /run/contextscroll/context.sock

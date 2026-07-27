@@ -6,6 +6,8 @@ After=modprobe@uinput.service
 [Service]
 Type=simple
 ExecStart=/usr/bin/contextscroll
+User=contextscroll
+Group=contextscroll
 Restart=on-failure
 RestartSec=2
 RuntimeDirectory=contextscroll
@@ -15,9 +17,9 @@ RuntimeDirectoryMode=0755
 # userspace input bug must never be able to starve the compositor.
 Nice=-5
 
-# The daemon needs /dev/input, /dev/uinput, its read-only config, and the
-# RuntimeDirectory above. DevicePolicy/PrivateDevices are intentionally absent
-# because mice may be hot-plugged after startup.
+# A udev rule grants this unprivileged account access only to physical
+# mouse-class event nodes and /dev/uinput. DevicePolicy/PrivateDevices are
+# intentionally absent because mice may be hot-plugged after startup.
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=

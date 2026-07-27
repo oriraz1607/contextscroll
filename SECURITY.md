@@ -1,14 +1,16 @@
 # Security model
 
-ContextScroll handles privileged input and should be reviewed accordingly.
+ContextScroll handles sensitive input and should be reviewed accordingly.
 
 ## Trust boundaries
 
 ### Rust daemon
 
-`contextscroll` runs as root and exclusively grabs relative mice. It can read
-mouse buttons and movement, but it never opens keyboard devices. It creates a
-uinput mirror for each selected mouse.
+`contextscroll` runs as the dedicated, non-login `contextscroll` system
+account and exclusively grabs relative mice. A udev rule grants this account a
+POSIX ACL only on physical event nodes classified as mice and on
+`/dev/uinput`. It can read mouse buttons and movement, but it never opens
+keyboard-only devices. It creates a uinput mirror for each selected mouse.
 
 The daemon reads:
 
@@ -82,14 +84,15 @@ application accessibility implementation cannot delay a physical click.
 
 ## Deliberate systemd exceptions
 
-The system service cannot use `PrivateDevices=yes` or a closed
-`DevicePolicy`, because it must open real and hot-plugged evdev nodes and
-`/dev/uinput`.
+The system service cannot use `PrivateDevices=yes` or a closed `DevicePolicy`,
+because it must open real and hot-plugged evdev nodes and `/dev/uinput`.
+Instead, Unix ACLs restrict the unprivileged service account to udev-classified
+mouse nodes and uinput. It is not a member of the broad `input` group.
 
 The daemon uses normal time-sharing scheduling with a modest negative nice
 value. It deliberately does not use real-time FIFO scheduling, so a faulty
-event loop cannot starve the compositor. The process itself has an empty
-capability set.
+event loop cannot starve the compositor. The process is not root and has an
+empty capability set.
 
 ## Reporting
 

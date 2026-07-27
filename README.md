@@ -91,6 +91,7 @@ Runtime:
 
 - Linux with evdev and uinput;
 - systemd;
+- POSIX ACL tools (`setfacl`);
 - Python 3;
 - PyGObject with the AT-SPI 2 introspection bindings.
 - `libX11` (normally already installed by XWayland).
@@ -104,13 +105,13 @@ Build:
 Fedora:
 
 ```bash
-sudo dnf install cargo rust python3-gobject at-spi2-core libX11
+sudo dnf install acl cargo rust python3-gobject at-spi2-core libX11
 ```
 
 Debian/Ubuntu package names are typically:
 
 ```bash
-sudo apt install cargo rustc python3-gi gir1.2-atspi-2.0 at-spi2-core libx11-6
+sudo apt install acl cargo rustc python3-gi gir1.2-atspi-2.0 at-spi2-core libx11-6
 ```
 
 ## Install
@@ -120,10 +121,10 @@ First stop any other daemon that exclusively grabs the same mouse.
 For a one-command install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oriraz1607/contextscroll/v0.1.0/scripts/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oriraz1607/contextscroll/v0.2.0/scripts/bootstrap.sh | bash
 ```
 
-The bootstrap creates a temporary shallow checkout of the immutable `v0.1.0`
+The bootstrap creates a temporary shallow checkout of the immutable `v0.2.0`
 release, runs the normal installer, and removes the checkout afterward.
 
 To install from an existing checkout instead:
@@ -263,8 +264,9 @@ other mouse service.
 
 ## Architecture and safety
 
-- The Rust daemon runs as root only because `/dev/input/event*` and
-  `/dev/uinput` normally require it.
+- The Rust daemon runs as the dedicated, non-login `contextscroll` system
+  account. A udev rule grants that account access only to physical
+  mouse-class event nodes and `/dev/uinput`.
 - It accepts context only from a Unix-socket peer whose UID logind reports as
   an active or online desktop user.
 - Protocol lines are capped at 2048 bytes before JSON parsing.
@@ -279,8 +281,8 @@ other mouse service.
 - Each virtual mouse copies the physical device's vendor/product identity and
   capabilities. Its name is prefixed with `ContextScroll virtual:` so the
   daemon can reliably ignore its own output device.
-- Both systemd units drop all capabilities and apply syscall, filesystem,
-  namespace, network, memory, and task limits.
+- Both systemd units run unprivileged, drop all capabilities, and apply
+  syscall, filesystem, namespace, network, memory, and task limits.
 
 See [SECURITY.md](SECURITY.md) for the trust model.
 

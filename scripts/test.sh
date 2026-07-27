@@ -11,3 +11,9 @@ python3 -m compileall -q contextscroll bin/contextscroll-context
 for script in scripts/*.sh; do
     bash -n "$script"
 done
+
+grep -qx 'User=contextscroll' systemd/contextscroll.service
+grep -qx 'Group=contextscroll' systemd/contextscroll.service
+grep -Fq 'ENV{ID_INPUT_MOUSE}=="1"' udev/99-contextscroll.rules
+grep -Fq 'ATTRS{name}!="ContextScroll virtual: *"' \
+    udev/99-contextscroll.rules

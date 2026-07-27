@@ -5,6 +5,11 @@ if [[ ${EUID} -ne 0 ]]; then
     exec sudo "$0" "$@"
 fi
 
+remove_service_account=false
+if [[ -e /usr/lib/contextscroll/managed-system-user ]]; then
+    remove_service_account=true
+fi
+
 desktop_user=${SUDO_USER:-}
 if [[ -z $desktop_user && ${PKEXEC_UID:-} =~ ^[0-9]+$ ]]; then
     desktop_user=$(id -nu "$PKEXEC_UID")
@@ -33,12 +38,32 @@ fi
 systemctl disable --now contextscroll.service 2>/dev/null || true
 systemctl --global disable contextscroll-context.service 2>/dev/null || true
 
+rm -f /usr/lib/udev/rules.d/99-contextscroll.rules
+if command -v udevadm >/dev/null; then
+    udevadm control --reload-rules || true
+fi
+if getent group contextscroll >/dev/null && command -v setfacl >/dev/null; then
+    for device_path in /dev/input/event* /dev/uinput; do
+        [[ -e $device_path ]] || continue
+        setfacl -x g:contextscroll "$device_path" 2>/dev/null || true
+    done
+fi
+
 rm -f /usr/bin/contextscroll
 rm -f /usr/bin/contextscroll-context
 rm -f /usr/lib/systemd/system/contextscroll.service
 rm -f /usr/lib/systemd/user/contextscroll-context.service
 rm -rf /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll
 rm -rf /usr/lib/contextscroll
+
+if [[ $remove_service_account == true ]]; then
+    if getent passwd contextscroll >/dev/null; then
+        userdel contextscroll
+    fi
+    if getent group contextscroll >/dev/null; then
+        groupdel contextscroll
+    fi
+fi
 
 systemctl daemon-reload
 

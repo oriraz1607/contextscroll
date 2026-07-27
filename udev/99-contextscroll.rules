@@ -1,0 +1,7 @@
+# Grant the dedicated daemon account access only to physical mouse-class
+# event nodes. Do not grant it access to keyboards, other input classes, or
+# ContextScroll's own uinput mirrors.
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", ATTRS{name}!="ContextScroll virtual: *", RUN+="/usr/bin/setfacl -m g:contextscroll:rw /dev/input/%k"
+
+# Creating a virtual mouse requires write access to uinput, but not root.
+ACTION=="add|change", SUBSYSTEM=="misc", KERNEL=="uinput", RUN+="/usr/bin/setfacl -m g:contextscroll:rw /dev/%k"
