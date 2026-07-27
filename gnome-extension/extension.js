@@ -48,19 +48,27 @@ export default class ContextScrollPointerExtension extends Extension {
         [this._x, this._y] = global.get_pointer();
         this._cursorTracker = global.backend.get_cursor_tracker();
         this._seat = Clutter.get_default_backend().get_default_seat();
+        this._indicatorActive = false;
         this._cursorHidden = false;
         this._focusInhibited = false;
+        this._cursorRevealId = 0;
         this._cursorIcon = new St.Icon({
             reactive: false,
             can_focus: false,
             track_hover: false,
             icon_size: 28,
+            width: 28,
+            height: 28,
             gicon: Gio.Icon.new_for_string(
                 `${this.path}/autoscroll-cursor.svg`
             ),
         });
         this._cursorIcon.hide();
-        Main.uiGroup.add_child(this._cursorIcon);
+        Main.layoutManager.addTopChrome(this._cursorIcon, {
+            affectsInputRegion: false,
+            affectsStruts: false,
+            trackFullscreen: true,
+        });
         this._dbus = Gio.DBusExportedObject.wrapJSObject(
             INTERFACE_XML,
             this
@@ -81,6 +89,12 @@ export default class ContextScrollPointerExtension extends Extension {
 
     disable() {
         this._setCursorActive(false);
+        if (this._cursorRevealId) {
+            GLib.source_remove(this._cursorRevealId);
+            this._cursorRevealId = 0;
+        }
+        if (this._cursorIcon?.get_parent())
+            Main.layoutManager.removeChrome(this._cursorIcon);
         this._cursorIcon?.destroy();
         this._cursorIcon = null;
         this._cursorTracker = null;
@@ -111,6 +125,11 @@ export default class ContextScrollPointerExtension extends Extension {
     _setCursorActive(active) {
         if (!this._cursorIcon || !this._cursorTracker || !this._seat)
             return;
+        this._indicatorActive = active;
+        if (this._cursorRevealId) {
+            GLib.source_remove(this._cursorRevealId);
+            this._cursorRevealId = 0;
+        }
         if (!active) {
             this._cursorIcon.hide();
             if (this._focusInhibited) {
@@ -124,15 +143,30 @@ export default class ContextScrollPointerExtension extends Extension {
             return;
         }
         this._moveCursorIcon();
+        this._cursorIcon.opacity = 255;
         this._cursorIcon.show();
         if (!this._focusInhibited) {
             this._seat.inhibit_unfocus();
             this._focusInhibited = true;
         }
-        if (!this._cursorHidden) {
-            this._cursorTracker.inhibit_cursor_visibility();
-            this._cursorHidden = true;
-        }
+        // Let Shell map and allocate the replacement before hiding the
+        // hardware cursor. If the actor cannot be mapped, leave the normal
+        // cursor visible instead of producing an invisible pointer.
+        this._cursorRevealId = GLib.idle_add(
+            GLib.PRIORITY_HIGH_IDLE,
+            () => {
+                this._cursorRevealId = 0;
+                if (
+                    this._indicatorActive &&
+                    this._cursorIcon?.mapped &&
+                    !this._cursorHidden
+                ) {
+                    this._cursorTracker.inhibit_cursor_visibility();
+                    this._cursorHidden = true;
+                }
+                return GLib.SOURCE_REMOVE;
+            }
+        );
     }
 
     _moveCursorIcon() {

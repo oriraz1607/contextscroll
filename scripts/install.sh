@@ -28,6 +28,10 @@ if [[ ${EUID} -ne 0 ]]; then
     exec sudo "$0" "$@"
 fi
 
+desktop_user=${SUDO_USER:-}
+if [[ -z $desktop_user && ${PKEXEC_UID:-} =~ ^[0-9]+$ ]]; then
+    desktop_user=$(id -nu "$PKEXEC_UID")
+fi
 
 [[ -x target/release/contextscroll ]] || {
     echo "Release binary is missing. Run this script as your desktop user first." >&2
@@ -50,6 +54,20 @@ install -Dm644 gnome-extension/extension.js \
     /usr/share/gnome-shell/extensions/contextscroll-pointer@local/extension.js
 install -Dm644 gnome-extension/icons/autoscroll-cursor.svg \
     /usr/share/gnome-shell/extensions/contextscroll-pointer@local/autoscroll-cursor.svg
+if [[ -n $desktop_user && $desktop_user != root ]]; then
+    desktop_home=$(getent passwd "$desktop_user" | cut -d: -f6)
+    desktop_group=$(id -gn "$desktop_user")
+    user_extension="$desktop_home/.local/share/gnome-shell/extensions/contextscroll-pointer@local"
+    install -d -m755 -o "$desktop_user" -g "$desktop_group" \
+        "$user_extension"
+    install -m644 -o "$desktop_user" -g "$desktop_group" \
+        gnome-extension/metadata.json "$user_extension/metadata.json"
+    install -m644 -o "$desktop_user" -g "$desktop_group" \
+        gnome-extension/extension.js "$user_extension/extension.js"
+    install -m644 -o "$desktop_user" -g "$desktop_group" \
+        gnome-extension/icons/autoscroll-cursor.svg \
+        "$user_extension/autoscroll-cursor.svg"
+fi
 install -Dm644 systemd/contextscroll.service \
     /usr/lib/systemd/system/contextscroll.service
 install -Dm644 systemd/contextscroll-context.service \
@@ -61,11 +79,6 @@ elif grep -qx 'SPEED_MULTIPLIER = 0.008' /etc/contextscroll.conf; then
     # Migrate the original default while preserving every other user setting.
     sed -i 's/^SPEED_MULTIPLIER = 0\.008$/SPEED_MULTIPLIER = 0.0112/' \
         /etc/contextscroll.conf
-fi
-
-desktop_user=${SUDO_USER:-}
-if [[ -z $desktop_user && ${PKEXEC_UID:-} =~ ^[0-9]+$ ]]; then
-    desktop_user=$(id -nu "$PKEXEC_UID")
 fi
 
 systemctl daemon-reload
@@ -91,6 +104,10 @@ if [[ -n $desktop_user && $desktop_user != root ]]; then
         XDG_RUNTIME_DIR="/run/user/$desktop_uid" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$desktop_uid/bus" \
         /usr/lib/contextscroll/set-extension-enabled enable || true
+    sudo -u "$desktop_user" \
+        XDG_RUNTIME_DIR="/run/user/$desktop_uid" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$desktop_uid/bus" \
+        gnome-extensions disable contextscroll-pointer@local || true
     sudo -u "$desktop_user" \
         XDG_RUNTIME_DIR="/run/user/$desktop_uid" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$desktop_uid/bus" \
