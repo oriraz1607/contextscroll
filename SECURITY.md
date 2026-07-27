@@ -30,7 +30,9 @@ screenshots, clipboard contents, network resources, or application files.
 The Shell extension temporarily hides the native pointer and renders a
 non-reactive autoscroll cursor when the daemon reports that autoscroll is
 active. Cursor visibility uses GNOME's paired inhibit/uninhibit API, and the
-replacement overlay cannot receive input.
+replacement overlay cannot receive input. A paired seat focus inhibitor keeps
+wheel events directed to the under-pointer application while the native
+cursor is hidden.
 
 Its service exposes `/tmp/.X11-unix` read-only inside otherwise-private
 network and temporary-file namespaces.

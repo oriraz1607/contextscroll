@@ -17,9 +17,10 @@ native.
 
 There is no hold threshold, click timeout, or latency parameter.
 
-On GNOME Wayland, the normal pointer changes to a blue four-direction
-autoscroll cursor while autoscroll is active. The replacement cursor is
-click-through and follows the physical pointer until autoscroll stops.
+On GNOME Wayland, the normal pointer changes to a compact black
+four-direction autoscroll cursor with a white outline while autoscroll is
+active. The replacement cursor is click-through and follows the physical
+pointer until autoscroll stops.
 
 ## How it works
 
