@@ -4,10 +4,12 @@ import unittest
 from contextscroll.classifier import Decision
 from contextscroll.context_agent import LatestPoint
 from contextscroll.protocol import (
+    ActivityReport,
     ContextRegistry,
     ContextReport,
     MAX_LINE_BYTES,
     decode,
+    decode_activity,
     encode,
 )
 
@@ -33,6 +35,18 @@ class ProtocolTests(unittest.TestCase):
         registry.update("client", ContextReport(Decision.SCROLL))
         time.sleep(0.02)
         self.assertEqual(registry.current().decision, Decision.UNKNOWN)
+
+    def test_activity_report_round_trip_from_daemon(self):
+        self.assertEqual(
+            decode_activity(b'{"v":1,"type":"activity","active":true}\n'),
+            ActivityReport(True),
+        )
+
+    def test_invalid_activity_report_is_rejected(self):
+        with self.assertRaises(ValueError):
+            decode_activity(
+                b'{"v":1,"type":"activity","active":"yes"}\n'
+            )
 
     def test_latest_point_can_be_used_with_slots(self):
         point = LatestPoint()

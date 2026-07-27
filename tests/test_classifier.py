@@ -181,6 +181,70 @@ class ClassifierTests(unittest.TestCase):
                     Decision.SCROLL,
                 )
 
+    def test_document_and_image_viewer_content_is_scroll(self):
+        chain = [self.node("image"), self.node("panel"), self.node("frame")]
+        for application in (
+            "Papers",
+            "Document Viewer",
+            "Okular",
+            "Foliate",
+            "Image Viewer",
+            "Loupe",
+            "Help",
+        ):
+            with self.subTest(application=application):
+                self.assertEqual(
+                    classify_chain(chain, application),
+                    Decision.SCROLL,
+                )
+
+    def test_viewer_controls_remain_native(self):
+        chain = [
+            self.node("button", actions=["click"]),
+            self.node("tool bar"),
+            self.node("panel"),
+            self.node("frame"),
+        ]
+        self.assertEqual(
+            classify_chain(chain, "Papers"),
+            Decision.NATIVE,
+        )
+
+    def test_file_manager_background_is_scroll(self):
+        chain = [self.node("panel"), self.node("frame")]
+        for application in (
+            "Files",
+            "org.gnome.Nautilus",
+            "Dolphin",
+            "Nemo",
+            "Thunar",
+        ):
+            with self.subTest(application=application):
+                self.assertEqual(
+                    classify_chain(chain, application),
+                    Decision.SCROLL,
+                )
+
+    def test_file_manager_icon_remains_native(self):
+        chain = [
+            self.node("icon", actions=["open"]),
+            self.node("panel"),
+            self.node("frame"),
+        ]
+        self.assertEqual(
+            classify_chain(chain, "Files"),
+            Decision.NATIVE,
+        )
+
+    def test_terminal_panel_remains_unknown(self):
+        self.assertEqual(
+            classify_chain(
+                [self.node("panel"), self.node("frame")],
+                "ptyxis",
+            ),
+            Decision.UNKNOWN,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

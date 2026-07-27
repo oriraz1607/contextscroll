@@ -3,5 +3,5 @@
   "name": "ContextScroll Pointer Bridge",
   "description": "Provides rate-limited Wayland pointer coordinates to ContextScroll.",
   "shell-version": ["48", "49", "50"],
-  "version": 2
+  "version": 3
 }

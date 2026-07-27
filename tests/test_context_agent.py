@@ -1,7 +1,12 @@
 import unittest
+import threading
 from types import SimpleNamespace
 
-from contextscroll.context_agent import AccessibilityTree
+from contextscroll.context_agent import (
+    AccessibilityTree,
+    ContextWorker,
+    LatestPoint,
+)
 
 
 class FakeStateSet:
@@ -118,6 +123,37 @@ class ContextTreeTests(unittest.TestCase):
             (1920, 208, 1920, 1080, -1, ""),
         )
         self.assertEqual(mapped, (580, 524))
+
+
+class ContextWorkerTests(unittest.TestCase):
+    def test_receives_daemon_activity_transitions(self):
+        class FakeConnection:
+            def __init__(self):
+                self.chunks = [
+                    (
+                        b'{"v":1,"type":"activity","active":true}\n'
+                        b'{"v":1,"type":"activity","active":false}\n'
+                    )
+                ]
+
+            def recv(self, _size, _flags):
+                if self.chunks:
+                    return self.chunks.pop(0)
+                raise BlockingIOError
+
+        worker = ContextWorker(
+            tree=object(),
+            points=LatestPoint(),
+            socket_path="/not-used",
+            stop=threading.Event(),
+        )
+        worker.connection = FakeConnection()
+        changes = []
+        worker.set_active_callback(changes.append)
+
+        worker._receive_activity()
+
+        self.assertEqual(changes, [False, True, False])
 
 
 if __name__ == "__main__":

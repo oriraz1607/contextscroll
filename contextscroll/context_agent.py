@@ -20,12 +20,13 @@ from dataclasses import dataclass, field
 
 from .classifier import Decision, SemanticNode, classify_chain
 from .pointer import GnomeShellPointer, PointerUnavailable, X11Pointer
-from .protocol import ContextReport, encode
+from .protocol import MAX_LINE_BYTES, ContextReport, decode_activity, encode
 
 log = logging.getLogger("contextscroll.context")
 
 DEFAULT_SOCKET = "/run/contextscroll/context.sock"
 HEARTBEAT_SECONDS = 0.20
+STATE_POLL_SECONDS = 0.05
 MIN_QUERY_INTERVAL = 1.0 / 30.0
 POINTER_SAMPLE_MILLISECONDS = 8
 MAX_ANCESTORS = 32
@@ -485,6 +486,33 @@ class ContextWorker(threading.Thread):
         self.stop_event = stop
         self.last_report = ContextReport(Decision.UNKNOWN)
         self.connection: socket.socket | None = None
+        self.receive_buffer = bytearray()
+        self.active = False
+        self.active_callback = None
+
+    def set_active_callback(self, callback) -> None:
+        self.active_callback = callback
+        callback(self.active)
+
+    def _set_active(self, active: bool) -> None:
+        if active == self.active:
+            return
+        self.active = active
+        if self.active_callback is not None:
+            try:
+                self.active_callback(active)
+            except Exception as error:
+                log.warning("could not update autoscroll indicator: %s", error)
+
+    def _disconnect(self) -> None:
+        if self.connection is not None:
+            try:
+                self.connection.close()
+            except OSError:
+                pass
+        self.connection = None
+        self.receive_buffer.clear()
+        self._set_active(False)
 
     def _connect(self) -> bool:
         if self.connection is not None:
@@ -498,6 +526,7 @@ class ContextWorker(threading.Thread):
             return False
         candidate.settimeout(None)
         self.connection = candidate
+        self.receive_buffer.clear()
         log.info("connected to %s", self.socket_path)
         return True
 
@@ -507,11 +536,39 @@ class ContextWorker(threading.Thread):
         try:
             self.connection.sendall(encode(self.last_report))
         except OSError:
+            self._disconnect()
+
+    def _receive_activity(self) -> None:
+        if self.connection is None:
+            return
+        while True:
             try:
-                self.connection.close()
+                data = self.connection.recv(512, socket.MSG_DONTWAIT)
+            except BlockingIOError:
+                break
             except OSError:
-                pass
-            self.connection = None
+                self._disconnect()
+                break
+            if not data:
+                self._disconnect()
+                break
+            self.receive_buffer.extend(data)
+            while b"\n" in self.receive_buffer:
+                line, _, remainder = self.receive_buffer.partition(b"\n")
+                self.receive_buffer = bytearray(remainder)
+                if len(line) + 1 > MAX_LINE_BYTES:
+                    self._disconnect()
+                    return
+                try:
+                    report = decode_activity(line + b"\n")
+                except ValueError as error:
+                    log.warning("invalid daemon activity message: %s", error)
+                    self._disconnect()
+                    return
+                self._set_active(report.active)
+            if len(self.receive_buffer) > MAX_LINE_BYTES:
+                self._disconnect()
+                break
 
     def run(self) -> None:
         generation = -1
@@ -519,8 +576,9 @@ class ContextWorker(threading.Thread):
         next_send = 0.0
         while not self.stop_event.is_set():
             x, y, current_generation, window = self.points.wait(
-                generation, HEARTBEAT_SECONDS
+                generation, STATE_POLL_SECONDS
             )
+            self._receive_activity()
             now = time.monotonic()
             changed = current_generation != generation
             if changed and (x is None or y is None):
@@ -548,12 +606,9 @@ class ContextWorker(threading.Thread):
                 )
             if changed or time.monotonic() >= next_send:
                 self._send()
+                self._receive_activity()
                 next_send = time.monotonic() + HEARTBEAT_SECONDS
-        if self.connection is not None:
-            try:
-                self.connection.close()
-            except OSError:
-                pass
+        self._disconnect()
 
 
 def parse_args(argv=None):
@@ -623,7 +678,7 @@ def main(argv=None) -> int:
 
     if session_type == "wayland":
         try:
-            pointer = GnomeShellPointer(gio)
+            pointer = GnomeShellPointer(gio, glib)
         except PointerUnavailable as error:
             stop.set()
             worker.join(timeout=2.0)
@@ -633,6 +688,7 @@ def main(argv=None) -> int:
                 "the ContextScroll GNOME extension is required on Wayland"
             ) from error
         pointer.connect(points.update)
+        worker.set_active_callback(pointer.set_indicator)
         points.update(*pointer.position())
         coordinate_source = "GNOME Shell coordinates"
     else:

@@ -10,8 +10,16 @@ starts autoscroll.
 The semantic policy also covers LibreOffice Writer document bodies and
 standard desktop scroll surfaces such as directory panes, lists, tables,
 trees, and scroll panes. Writer links and toolbar controls remain native.
+Fallbacks cover common document/PDF/image/help viewers (including Papers,
+Evince, Okular, Foliate, Loupe, and Yelp) and blank folder views in Files,
+Nautilus, Dolphin, Nemo, and Thunar. File icons and viewer controls remain
+native.
 
 There is no hold threshold, click timeout, or latency parameter.
+
+On GNOME Wayland, a small blue-and-white ring appears at the autoscroll
+anchor while autoscroll is active. The ring is click-through and stays at the
+starting point until autoscroll stops.
 
 ## How it works
 
@@ -22,10 +30,12 @@ ContextScroll is two deliberately separate processes:
    than 60 Hz.
 2. `contextscroll-context` runs as your desktop user. It combines those
    coordinates with AT-SPI roles to classify the accessible object beneath
-   the pointer. On X11 it samples coordinates through Xlib instead.
+   the pointer and tells the Shell bridge when to show the anchor indicator.
+   On X11 it samples coordinates through Xlib instead.
 3. `contextscroll` is a small Rust system daemon. It mirrors physical mice
    through evdev/uinput and keeps the most recent classification in a
-   lock-free cache.
+   lock-free cache. It reports only the aggregate active/inactive state back
+   to the session helper.
 
 When the middle button is pressed, the Rust path reads two atomics and makes
 the decision immediately:
@@ -130,7 +140,8 @@ Verify the live setup:
 ```
 
 The suite tests the Rust routing state machine, speed curve, configuration and
-bounded protocol, plus the Python semantic classifier and protocol encoder.
+bounded bidirectional protocol, plus the Python semantic classifier and
+protocol encoder.
 It does not need root or access to physical input devices.
 
 ## Use

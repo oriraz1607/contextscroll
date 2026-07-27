@@ -1,8 +1,10 @@
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import St from 'gi://St';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {getPointerWatcher} from 'resource:///org/gnome/shell/ui/pointerWatcher.js';
 
 const BUS_NAME = 'org.contextscroll.Pointer';
@@ -25,6 +27,9 @@ const INTERFACE_XML = `
       <arg type="i" name="window_pid" direction="out"/>
       <arg type="s" name="window_title" direction="out"/>
     </method>
+    <method name="SetIndicator">
+      <arg type="b" name="active" direction="in"/>
+    </method>
     <signal name="ContextChanged">
       <arg type="i" name="x"/>
       <arg type="i" name="y"/>
@@ -41,6 +46,33 @@ const INTERFACE_XML = `
 export default class ContextScrollPointerExtension extends Extension {
     enable() {
         [this._x, this._y] = global.get_pointer();
+        this._indicator = new St.Widget({
+            reactive: false,
+            can_focus: false,
+            track_hover: false,
+            width: 26,
+            height: 26,
+            style: `
+                border: 2px solid rgba(255, 255, 255, 0.95);
+                border-radius: 13px;
+                background-color: rgba(53, 132, 228, 0.42);
+                box-shadow: 0 2px 7px 2px rgba(0, 0, 0, 0.55);
+            `,
+        });
+        this._dot = new St.Widget({
+            reactive: false,
+            width: 6,
+            height: 6,
+            x: 10,
+            y: 10,
+            style: `
+                border-radius: 3px;
+                background-color: rgba(255, 255, 255, 0.95);
+            `,
+        });
+        this._indicator.add_child(this._dot);
+        this._indicator.hide();
+        Main.uiGroup.add_child(this._indicator);
         this._dbus = Gio.DBusExportedObject.wrapJSObject(
             INTERFACE_XML,
             this
@@ -60,6 +92,9 @@ export default class ContextScrollPointerExtension extends Extension {
     }
 
     disable() {
+        this._indicator?.destroy();
+        this._indicator = null;
+        this._dot = null;
         this._watch?.remove();
         this._watch = null;
         this._pointerWatcher = null;
@@ -79,16 +114,46 @@ export default class ContextScrollPointerExtension extends Extension {
         return this._snapshot();
     }
 
+    SetIndicator(active) {
+        if (!this._indicator)
+            return;
+        if (!active) {
+            this._indicator.hide();
+            return;
+        }
+        this._indicator.set_position(this._x - 13, this._y - 13);
+        this._indicator.show();
+    }
+
     _windowAtPoint() {
         let actor = global.stage.get_actor_at_pos(
             Clutter.PickMode.ALL,
             this._x,
             this._y
         );
+        if (actor && this._indicator?.contains(actor))
+            actor = null;
         while (actor) {
             if (actor.meta_window)
                 return actor.meta_window;
             actor = actor.get_parent();
+        }
+        // A non-reactive overlay or Shell chrome may be the picked actor.
+        // Fall back to the topmost visible compositor window containing the
+        // point, keeping the indicator click-through.
+        const windows = global.get_window_actors();
+        for (let index = windows.length - 1; index >= 0; index--) {
+            const windowActor = windows[index];
+            const window = windowActor.meta_window;
+            const rect = window.get_frame_rect();
+            if (
+                windowActor.visible &&
+                rect.x <= this._x &&
+                this._x < rect.x + rect.width &&
+                rect.y <= this._y &&
+                this._y < rect.y + rect.height
+            )
+                return window;
         }
         return null;
     }

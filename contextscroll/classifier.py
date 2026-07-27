@@ -146,6 +146,64 @@ LIBREOFFICE_APPLICATION_MARKERS = {
     "soffice",
 }
 
+VIEWER_APPLICATION_MARKERS = {
+    "calibre ebook viewer",
+    "document viewer",
+    "eye of gnome",
+    "evince",
+    "foliate",
+    "image viewer",
+    "loupe",
+    "okular",
+    "papers",
+    "yelp",
+    "zathura",
+}
+
+VIEWER_EXACT_NAMES = {
+    "help",
+}
+
+VIEWER_CONTENT_ROLES = {
+    "article",
+    "canvas",
+    "drawing area",
+    "html container",
+    "image",
+    "page",
+    "panel",
+    "paragraph",
+    "section",
+    "static",
+    "text",
+    "viewport",
+}
+
+FILE_MANAGER_APPLICATION_MARKERS = {
+    "caja",
+    "dolphin",
+    "nautilus",
+    "nemo",
+    "pcmanfm",
+    "thunar",
+}
+
+FILE_MANAGER_EXACT_NAMES = {
+    "files",
+}
+
+FILE_MANAGER_CONTENT_ROLES = {
+    "directory pane",
+    "layered pane",
+    "list",
+    "list box",
+    "panel",
+    "section",
+    "table",
+    "tree",
+    "viewport",
+}
+
 ACTIVATION_ACTIONS = {
     "activate",
     "click",
@@ -197,6 +255,17 @@ def is_browser_application(application: str) -> bool:
     return any(marker in name for marker in BROWSER_APPLICATION_MARKERS)
 
 
+def application_matches(
+    application: str,
+    markers: set[str],
+    exact_names: set[str] | None = None,
+) -> bool:
+    name = normalize(application)
+    return name in (exact_names or set()) or any(
+        marker in name for marker in markers
+    )
+
+
 def is_libreoffice_writer(
     chain: tuple[SemanticNode, ...], application: str
 ) -> bool:
@@ -233,5 +302,17 @@ def classify_chain(
     if is_browser_application(application) and any(
         node.role in BROWSER_CONTENT_ROLES for node in chain
     ):
+        return Decision.SCROLL
+    if application_matches(
+        application,
+        VIEWER_APPLICATION_MARKERS,
+        VIEWER_EXACT_NAMES,
+    ) and any(node.role in VIEWER_CONTENT_ROLES for node in chain):
+        return Decision.SCROLL
+    if application_matches(
+        application,
+        FILE_MANAGER_APPLICATION_MARKERS,
+        FILE_MANAGER_EXACT_NAMES,
+    ) and any(node.role in FILE_MANAGER_CONTENT_ROLES for node in chain):
         return Decision.SCROLL
     return Decision.UNKNOWN

@@ -20,8 +20,9 @@ class GnomeShellPointer:
     OBJECT_PATH = "/org/contextscroll/Pointer"
     INTERFACE = "org.contextscroll.Pointer"
 
-    def __init__(self, gio):
+    def __init__(self, gio, glib=None):
         self._gio = gio
+        self._glib = glib
         self._callback = None
         self._handler = None
         self._legacy = False
@@ -158,7 +159,24 @@ class GnomeShellPointer:
     def position(self):
         return self._position
 
+    def set_indicator(self, active: bool) -> None:
+        if self._proxy is None or self._glib is None:
+            return
+        try:
+            self._proxy.call_sync(
+                "SetIndicator",
+                self._glib.Variant("(b)", (bool(active),)),
+                self._gio.DBusCallFlags.NONE,
+                1_000,
+                None,
+            )
+        except Exception:
+            # Extension upgrades are cached by GNOME Wayland until the next
+            # graphical login. Context recognition must continue meanwhile.
+            return
+
     def close(self) -> None:
+        self.set_indicator(False)
         proxy = getattr(self, "_proxy", None)
         handler = getattr(self, "_handler", None)
         if proxy is not None and handler is not None:

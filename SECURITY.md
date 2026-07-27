@@ -27,6 +27,8 @@ On GNOME Wayland, the included Shell extension publishes rate-limited pointer
 coordinates and under-pointer window geometry over the session bus. On X11,
 the helper samples the pointer through Xlib. It does not access evdev, uinput,
 screenshots, clipboard contents, network resources, or application files.
+The Shell extension also renders a non-reactive anchor ring when the daemon
+reports that autoscroll is active; the overlay cannot receive input.
 
 Its service exposes `/tmp/.X11-unix` read-only inside otherwise-private
 network and temporary-file namespaces.
@@ -45,6 +47,10 @@ The helper sends only:
 
 Names are used only for diagnostics and are not persisted.
 
+The daemon sends one aggregate boolean (`active`) back to the authenticated
+helper so it can show or hide the anchor indicator. It does not send input
+events, device identities, or application data to the user session.
+
 ## Socket authentication
 
 The socket is writable by desktop users because the system daemon and session
@@ -57,6 +63,7 @@ Messages use bounded newline-delimited JSON:
 - maximum line length: 2048 bytes;
 - exact protocol version and message type;
 - an enumerated decision value;
+- a boolean active state in daemon-to-helper messages;
 - malformed or oversized input disconnects the client.
 
 ## Failure behavior

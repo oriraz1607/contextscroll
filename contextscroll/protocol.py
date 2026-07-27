@@ -23,6 +23,11 @@ class ContextReport:
     y: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ActivityReport:
+    active: bool
+
+
 def encode(report: ContextReport) -> bytes:
     payload = {
         "v": PROTOCOL_VERSION,
@@ -75,6 +80,23 @@ def decode(line: bytes) -> ContextReport:
         x=coordinate("x"),
         y=coordinate("y"),
     )
+
+
+def decode_activity(line: bytes) -> ActivityReport:
+    if len(line) > MAX_LINE_BYTES:
+        raise ValueError("activity report is too large")
+    try:
+        payload = json.loads(line)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("invalid JSON") from error
+    if (
+        not isinstance(payload, dict)
+        or payload.get("v") != PROTOCOL_VERSION
+        or payload.get("type") != "activity"
+        or not isinstance(payload.get("active"), bool)
+    ):
+        raise ValueError("invalid activity report")
+    return ActivityReport(payload["active"])
 
 
 class ContextRegistry:

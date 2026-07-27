@@ -6,20 +6,21 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use contextscroll::config::Settings;
-use contextscroll::context::{ContextCache, ContextMessage, MAX_LINE_BYTES};
+use contextscroll::context::{ContextCache, ContextMessage, Decision, MAX_LINE_BYTES};
 use contextscroll::engine::{Interaction, Route, WheelAccumulator};
 use evdev::uinput::VirtualDevice;
 use evdev::{
     AbsoluteAxisCode, AttributeSet, Device, EventType, InputEvent, KeyCode, RelativeAxisCode,
     SynchronizationCode,
 };
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval};
 
@@ -36,6 +37,35 @@ struct Arguments {
     debug: bool,
     check_config: bool,
     list_devices: bool,
+}
+
+#[derive(Debug)]
+struct Activity {
+    active_devices: AtomicUsize,
+    sender: watch::Sender<bool>,
+}
+
+impl Activity {
+    fn new(sender: watch::Sender<bool>) -> Self {
+        Self {
+            active_devices: AtomicUsize::new(0),
+            sender,
+        }
+    }
+
+    fn start(&self) {
+        if self.active_devices.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.sender.send_replace(true);
+        }
+    }
+
+    fn stop(&self) {
+        let previous = self.active_devices.fetch_sub(1, Ordering::SeqCst);
+        debug_assert!(previous > 0);
+        if previous == 1 {
+            self.sender.send_replace(false);
+        }
+    }
 }
 
 fn parse_arguments() -> Result<Arguments, String> {
@@ -191,6 +221,7 @@ fn run_mouse(
     mut device: Device,
     settings: Arc<Settings>,
     cache: Arc<ContextCache>,
+    activity: Arc<Activity>,
     shutdown: Arc<AtomicBool>,
     debug_enabled: bool,
 ) -> Result<(), AnyError> {
@@ -202,6 +233,7 @@ fn run_mouse(
     let mut wheel = WheelAccumulator::default();
     let mut batch = Vec::<InputEvent>::with_capacity(16);
     let mut held = HashSet::<u16>::new();
+    let mut announced_active = false;
     let period = Duration::from_secs_f64(1.0 / settings.tick_hz);
     let mut previous_tick = Instant::now();
     let mut next_tick = previous_tick + period;
@@ -261,6 +293,10 @@ fn run_mouse(
                             }
                             Route::Consume => {}
                             Route::Start => {
+                                if !announced_active {
+                                    activity.start();
+                                    announced_active = true;
+                                }
                                 wheel.clear();
                                 previous_tick = Instant::now();
                                 next_tick = previous_tick + period;
@@ -273,6 +309,10 @@ fn run_mouse(
                                 );
                             }
                             Route::Stop => {
+                                if announced_active {
+                                    activity.stop();
+                                    announced_active = false;
+                                }
                                 wheel.clear();
                                 previous_tick = Instant::now();
                                 next_tick = previous_tick + period;
@@ -377,6 +417,9 @@ fn run_mouse(
         let releases: Vec<_> = held.into_iter().map(release_event).collect();
         let _ = output.emit(&releases);
     }
+    if announced_active {
+        activity.stop();
+    }
     eprintln!("INFO: released {}", path.display());
     result
 }
@@ -392,23 +435,17 @@ fn uid_has_desktop_session(uid: u32) -> bool {
     })
 }
 
-async fn handle_context_client(
-    stream: UnixStream,
-    cache: Arc<ContextCache>,
-    debug_enabled: bool,
-) -> Result<(), AnyError> {
-    let credentials = stream.peer_cred()?;
-    let uid = credentials.uid();
-    if !uid_has_desktop_session(uid) {
-        return Err(format!("rejected context client uid={uid}").into());
-    }
-    debug(debug_enabled, format!("context client connected uid={uid}"));
-    let mut reader = BufReader::with_capacity(MAX_LINE_BYTES + 1, stream);
-    let mut line = Vec::<u8>::with_capacity(512);
+async fn read_context_message<R>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+) -> Result<Option<Decision>, AnyError>
+where
+    R: AsyncBufRead + Unpin,
+{
     loop {
         let available = reader.fill_buf().await?;
         if available.is_empty() {
-            break;
+            return Ok(None);
         }
         let end = available
             .iter()
@@ -422,14 +459,56 @@ async fn handle_context_client(
         if line.last() != Some(&b'\n') {
             continue;
         }
-        match ContextMessage::parse(&line) {
-            Ok(decision) => {
+        let decision = ContextMessage::parse(line)?;
+        line.clear();
+        return Ok(Some(decision));
+    }
+}
+
+fn activity_message(active: bool) -> &'static [u8] {
+    if active {
+        b"{\"v\":1,\"type\":\"activity\",\"active\":true}\n"
+    } else {
+        b"{\"v\":1,\"type\":\"activity\",\"active\":false}\n"
+    }
+}
+
+async fn handle_context_client(
+    stream: UnixStream,
+    cache: Arc<ContextCache>,
+    mut activity: watch::Receiver<bool>,
+    debug_enabled: bool,
+) -> Result<(), AnyError> {
+    let credentials = stream.peer_cred()?;
+    let uid = credentials.uid();
+    if !uid_has_desktop_session(uid) {
+        return Err(format!("rejected context client uid={uid}").into());
+    }
+    debug(debug_enabled, format!("context client connected uid={uid}"));
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::with_capacity(MAX_LINE_BYTES + 1, read_half);
+    let mut line = Vec::<u8>::with_capacity(512);
+    let initial_activity = *activity.borrow();
+    write_half
+        .write_all(activity_message(initial_activity))
+        .await?;
+    loop {
+        tokio::select! {
+            changed = activity.changed() => {
+                changed?;
+                let active = *activity.borrow_and_update();
+                write_half
+                    .write_all(activity_message(active))
+                    .await?;
+            }
+            message = read_context_message(&mut reader, &mut line) => {
+                let Some(decision) = message? else {
+                    break;
+                };
                 cache.update(decision);
                 debug(debug_enabled, format!("context updated to {decision:?}"));
             }
-            Err(error) => return Err(error.into()),
         }
-        line.clear();
     }
     Ok(())
 }
@@ -437,6 +516,7 @@ async fn handle_context_client(
 async fn context_server(
     path: PathBuf,
     cache: Arc<ContextCache>,
+    activity: watch::Receiver<bool>,
     debug_enabled: bool,
 ) -> Result<(), AnyError> {
     if let Some(parent) = path.parent() {
@@ -453,8 +533,11 @@ async fn context_server(
     loop {
         let (stream, _) = listener.accept().await?;
         let client_cache = Arc::clone(&cache);
+        let client_activity = activity.clone();
         tokio::spawn(async move {
-            if let Err(error) = handle_context_client(stream, client_cache, debug_enabled).await {
+            if let Err(error) =
+                handle_context_client(stream, client_cache, client_activity, debug_enabled).await
+            {
                 debug(debug_enabled, format!("context client closed: {error}"));
             }
         });
@@ -489,10 +572,13 @@ async fn run(arguments: Arguments) -> Result<(), AnyError> {
     }
 
     let cache = Arc::new(ContextCache::new());
+    let (activity_sender, activity_receiver) = watch::channel(false);
+    let activity = Arc::new(Activity::new(activity_sender));
     let shutdown = Arc::new(AtomicBool::new(false));
     let socket_task = tokio::spawn(context_server(
         PathBuf::from(&settings.socket_path),
         Arc::clone(&cache),
+        activity_receiver,
         arguments.debug,
     ));
     let mut device_tasks = HashMap::<PathBuf, JoinHandle<()>>::new();
@@ -517,6 +603,7 @@ async fn run(arguments: Arguments) -> Result<(), AnyError> {
                     }
                     let task_settings = Arc::clone(&settings);
                     let task_cache = Arc::clone(&cache);
+                    let task_activity = Arc::clone(&activity);
                     let task_shutdown = Arc::clone(&shutdown);
                     let task_path = path.clone();
                     let debug_enabled = arguments.debug;
@@ -526,6 +613,7 @@ async fn run(arguments: Arguments) -> Result<(), AnyError> {
                             device,
                             task_settings,
                             task_cache,
+                            task_activity,
                             task_shutdown,
                             debug_enabled,
                         ) {
@@ -562,5 +650,32 @@ async fn main() {
             eprintln!("ERROR: {error}");
             std::process::exit(2);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activity_tracks_multiple_mice() {
+        let (sender, receiver) = watch::channel(false);
+        let activity = Activity::new(sender);
+        activity.start();
+        assert!(*receiver.borrow());
+        activity.start();
+        activity.stop();
+        assert!(*receiver.borrow());
+        activity.stop();
+        assert!(!*receiver.borrow());
+    }
+
+    #[test]
+    fn activity_protocol_is_bounded_json() {
+        assert_eq!(
+            activity_message(true),
+            b"{\"v\":1,\"type\":\"activity\",\"active\":true}\n"
+        );
+        assert!(activity_message(false).len() < MAX_LINE_BYTES);
     }
 }
