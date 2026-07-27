@@ -108,7 +108,16 @@ sudo apt install cargo rustc python3-gi gir1.2-atspi-2.0 at-spi2-core libx11-6
 
 First stop any other daemon that exclusively grabs the same mouse.
 
-Then install ContextScroll:
+For a one-command install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/oriraz1607/contextscroll/main/scripts/bootstrap.sh | bash
+```
+
+The bootstrap creates a temporary shallow checkout, runs the normal installer,
+and removes the checkout afterward.
+
+To install from an existing checkout instead:
 
 ```bash
 ./scripts/install.sh
