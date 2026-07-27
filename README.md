@@ -17,9 +17,9 @@ native.
 
 There is no hold threshold, click timeout, or latency parameter.
 
-On GNOME Wayland, a small blue-and-white ring appears at the autoscroll
-anchor while autoscroll is active. The ring is click-through and stays at the
-starting point until autoscroll stops.
+On GNOME Wayland, the normal pointer changes to a blue four-direction
+autoscroll cursor while autoscroll is active. The replacement cursor is
+click-through and follows the physical pointer until autoscroll stops.
 
 ## How it works
 
@@ -30,7 +30,7 @@ ContextScroll is two deliberately separate processes:
    than 60 Hz.
 2. `contextscroll-context` runs as your desktop user. It combines those
    coordinates with AT-SPI roles to classify the accessible object beneath
-   the pointer and tells the Shell bridge when to show the anchor indicator.
+   the pointer and tells the Shell bridge when to show the autoscroll cursor.
    On X11 it samples coordinates through Xlib instead.
 3. `contextscroll` is a small Rust system daemon. It mirrors physical mice
    through evdev/uinput and keeps the most recent classification in a

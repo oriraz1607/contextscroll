@@ -46,33 +46,19 @@ const INTERFACE_XML = `
 export default class ContextScrollPointerExtension extends Extension {
     enable() {
         [this._x, this._y] = global.get_pointer();
-        this._indicator = new St.Widget({
+        this._cursorTracker = global.backend.get_cursor_tracker();
+        this._cursorHidden = false;
+        this._cursorIcon = new St.Icon({
             reactive: false,
             can_focus: false,
             track_hover: false,
-            width: 26,
-            height: 26,
-            style: `
-                border: 2px solid rgba(255, 255, 255, 0.95);
-                border-radius: 13px;
-                background-color: rgba(53, 132, 228, 0.42);
-                box-shadow: 0 2px 7px 2px rgba(0, 0, 0, 0.55);
-            `,
+            icon_size: 36,
+            gicon: Gio.Icon.new_for_string(
+                `${this.path}/autoscroll-cursor.svg`
+            ),
         });
-        this._dot = new St.Widget({
-            reactive: false,
-            width: 6,
-            height: 6,
-            x: 10,
-            y: 10,
-            style: `
-                border-radius: 3px;
-                background-color: rgba(255, 255, 255, 0.95);
-            `,
-        });
-        this._indicator.add_child(this._dot);
-        this._indicator.hide();
-        Main.uiGroup.add_child(this._indicator);
+        this._cursorIcon.hide();
+        Main.uiGroup.add_child(this._cursorIcon);
         this._dbus = Gio.DBusExportedObject.wrapJSObject(
             INTERFACE_XML,
             this
@@ -92,9 +78,10 @@ export default class ContextScrollPointerExtension extends Extension {
     }
 
     disable() {
-        this._indicator?.destroy();
-        this._indicator = null;
-        this._dot = null;
+        this._setCursorActive(false);
+        this._cursorIcon?.destroy();
+        this._cursorIcon = null;
+        this._cursorTracker = null;
         this._watch?.remove();
         this._watch = null;
         this._pointerWatcher = null;
@@ -115,14 +102,30 @@ export default class ContextScrollPointerExtension extends Extension {
     }
 
     SetIndicator(active) {
-        if (!this._indicator)
+        this._setCursorActive(active);
+    }
+
+    _setCursorActive(active) {
+        if (!this._cursorIcon || !this._cursorTracker)
             return;
         if (!active) {
-            this._indicator.hide();
+            this._cursorIcon.hide();
+            if (this._cursorHidden) {
+                this._cursorTracker.uninhibit_cursor_visibility();
+                this._cursorHidden = false;
+            }
             return;
         }
-        this._indicator.set_position(this._x - 13, this._y - 13);
-        this._indicator.show();
+        this._moveCursorIcon();
+        this._cursorIcon.show();
+        if (!this._cursorHidden) {
+            this._cursorTracker.inhibit_cursor_visibility();
+            this._cursorHidden = true;
+        }
+    }
+
+    _moveCursorIcon() {
+        this._cursorIcon?.set_position(this._x - 18, this._y - 18);
     }
 
     _windowAtPoint() {
@@ -131,7 +134,7 @@ export default class ContextScrollPointerExtension extends Extension {
             this._x,
             this._y
         );
-        if (actor && this._indicator?.contains(actor))
+        if (actor && this._cursorIcon?.contains(actor))
             actor = null;
         while (actor) {
             if (actor.meta_window)
@@ -184,6 +187,8 @@ export default class ContextScrollPointerExtension extends Extension {
             return;
         this._x = x;
         this._y = y;
+        if (this._cursorHidden)
+            this._moveCursorIcon();
         this._dbus.emit_signal(
             'ContextChanged',
             new GLib.Variant('(iiiiiiis)', this._snapshot())

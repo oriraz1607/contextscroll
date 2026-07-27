@@ -48,6 +48,8 @@ install -Dm644 gnome-extension/metadata.json \
     /usr/share/gnome-shell/extensions/contextscroll-pointer@local/metadata.json
 install -Dm644 gnome-extension/extension.js \
     /usr/share/gnome-shell/extensions/contextscroll-pointer@local/extension.js
+install -Dm644 gnome-extension/icons/autoscroll-cursor.svg \
+    /usr/share/gnome-shell/extensions/contextscroll-pointer@local/autoscroll-cursor.svg
 install -Dm644 systemd/contextscroll.service \
     /usr/lib/systemd/system/contextscroll.service
 install -Dm644 systemd/contextscroll-context.service \
