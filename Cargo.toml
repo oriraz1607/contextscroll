@@ -3,8 +3,11 @@ name = "contextscroll"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Context-aware middle-button autoscrolling for Linux"
+description = "Context-aware Windows-style middle-click autoscrolling for Linux"
 license = "MIT"
+repository = "https://github.com/oriraz1607/contextscroll"
+readme = "README.md"
+keywords = ["linux", "wayland", "autoscroll", "mouse", "accessibility"]
 
 [dependencies]
 evdev = "0.13.2"

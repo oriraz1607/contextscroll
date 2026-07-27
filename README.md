@@ -1,26 +1,35 @@
 # ContextScroll
 
-Context-aware middle-button autoscrolling for Linux.
+[![CI](https://github.com/oriraz1607/contextscroll/actions/workflows/ci.yml/badge.svg)](https://github.com/oriraz1607/contextscroll/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/oriraz1607/contextscroll)](https://github.com/oriraz1607/contextscroll/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-ContextScroll knows the difference between a browser tab and the page below
-it. A middle click on a tab, link, button, or editable field is delivered to
-the application immediately. A middle click on a document or scrollable view
-starts autoscroll.
+**Windows-style, context-aware middle-click autoscrolling for Linux on GNOME
+Wayland and X11.**
 
-The semantic policy also covers LibreOffice Writer document bodies and
-standard desktop scroll surfaces such as directory panes, lists, tables,
-trees, and scroll panes. Writer links and toolbar controls remain native.
-Fallbacks cover common document/PDF/image/help viewers (including Papers,
-Evince, Okular, Foliate, Loupe, and Yelp) and blank folder views in Files,
-Nautilus, Dolphin, Nemo, and Thunar. File icons and viewer controls remain
-native.
+ContextScroll adds system-wide middle mouse button scrolling while preserving
+normal middle-click actions. It recognizes what is under the pointer: clicking
+a page or document starts autoscroll, while clicking a link opens a new browser
+tab and clicking a tab closes it immediately.
 
-There is no hold threshold, click timeout, or latency parameter.
+Highlights:
 
-On GNOME Wayland, the normal pointer changes to a compact black
-four-direction autoscroll cursor with a white outline while autoscroll is
-active. The replacement cursor is click-through and follows the physical
-pointer until autoscroll stops.
+- Windows-style toggle and hold autoscrolling with vertical and horizontal
+  movement;
+- native middle clicks on links, browser tabs, buttons, menus, sliders, and
+  editable fields;
+- Firefox, Brave, Chrome/Chromium, Electron, and other accessible browsers;
+- LibreOffice Writer, file managers, PDF/document/image viewers, lists,
+  tables, trees, and standard desktop scroll panes;
+- GNOME Wayland support through the included Shell extension and X11 support
+  through Xlib;
+- no hold threshold, click timeout, screenshot capture, or injected click
+  latency.
+
+On GNOME Wayland, the normal pointer changes to a compact black four-direction
+autoscroll cursor with a white outline while autoscroll is active. The
+replacement cursor is click-through and follows the physical pointer until
+autoscroll stops.
 
 ## How it works
 
