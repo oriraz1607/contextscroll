@@ -1,0 +1,50 @@
+[Unit]
+Description=ContextScroll context-aware middle-button autoscroll
+Wants=modprobe@uinput.service
+After=modprobe@uinput.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/contextscroll
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=contextscroll
+RuntimeDirectoryMode=0755
+
+# Give forwarding modest preference without real-time FIFO scheduling. A
+# userspace input bug must never be able to starve the compositor.
+Nice=-5
+
+# The daemon needs /dev/input, /dev/uinput, its read-only config, and the
+# RuntimeDirectory above. DevicePolicy/PrivateDevices are intentionally absent
+# because mice may be hot-plugged after startup.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+MemoryDenyWriteExecute=yes
+MemoryMax=64M
+TasksMax=32
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

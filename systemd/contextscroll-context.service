@@ -1,0 +1,48 @@
+[Unit]
+Description=ContextScroll semantic UI context helper
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/contextscroll-context
+Restart=on-failure
+RestartSec=2
+
+# The helper talks only to the user's AT-SPI/session buses, GNOME pointer
+# bridge or XWayland socket, and the daemon's Unix socket. It never reads raw
+# input devices and has no elevated privilege.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+# libatspi reads per-session bus metadata from the user's home. Keep that
+# visible but immutable.
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+# PrivateTmp hides the filesystem X socket while PrivateNetwork hides its
+# abstract-socket twin. Expose only the X11/XWayland socket directory.
+BindReadOnlyPaths=/tmp/.X11-unix
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+MemoryDenyWriteExecute=yes
+MemoryMax=192M
+TasksMax=32
+UMask=0077
+
+[Install]
+WantedBy=graphical-session.target
