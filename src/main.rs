@@ -328,6 +328,9 @@ fn run_mouse(
                     if event_type == EventType::RELATIVE
                         && (code == RelativeAxisCode::REL_X.0 || code == RelativeAxisCode::REL_Y.0)
                     {
+                        if value != 0 && !interaction.scrolling {
+                            cache.invalidate();
+                        }
                         let forward = interaction.motion(
                             if code == RelativeAxisCode::REL_X.0 {
                                 f64::from(value)

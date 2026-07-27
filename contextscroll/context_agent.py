@@ -43,6 +43,9 @@ MAX_LINK_CONTAINER_ANCESTORS = 8
 MAX_LINK_DESCENDANTS = 64
 MAX_LINK_DESCENT = 6
 MAX_LINK_CONTAINER_AREA_RATIO = 0.35
+POINT_LINK_ROOT_ANCESTOR = 4
+MAX_POINT_LINK_DESCENDANTS = 128
+MAX_POINT_LINK_DESCENT = 8
 
 
 def _load_atspi():
@@ -292,6 +295,59 @@ class AccessibilityTree:
                         )
                     )
         return False
+
+    def _has_hyperlink_at_point(
+        self, accessible, x: int, y: int
+    ) -> bool:
+        queue = [(accessible, 0)]
+        visited = 0
+        while queue and visited < MAX_POINT_LINK_DESCENDANTS:
+            candidate, depth = queue.pop(0)
+            visited += 1
+            try:
+                role = normalize(candidate.get_role_name() or "")
+            except Exception:
+                role = ""
+            if role == "link" and self._contains(candidate, x, y):
+                return True
+            if depth < MAX_POINT_LINK_DESCENT:
+                remaining = (
+                    MAX_POINT_LINK_DESCENDANTS
+                    - visited
+                    - len(queue)
+                )
+                if remaining > 0:
+                    queue.extend(
+                        (child, depth + 1)
+                        for child in self._children(
+                            candidate, maximum=remaining
+                        )
+                    )
+        return False
+
+    def _mark_hyperlink_at_point(
+        self,
+        accessibles,
+        nodes: list[SemanticNode],
+        application: str,
+        x: int,
+        y: int,
+    ) -> None:
+        if not is_browser_application(application) or not nodes:
+            return
+        if classify_chain(nodes, application) != Decision.SCROLL:
+            return
+        if not any(
+            "clickancestor" in node.actions for node in nodes[:3]
+        ):
+            return
+        root_index = min(
+            POINT_LINK_ROOT_ANCESTOR, len(accessibles) - 1
+        )
+        if self._has_hyperlink_at_point(
+            accessibles[root_index], x, y
+        ):
+            nodes[0] = replace(nodes[0], hyperlink_target=True)
 
     def _is_compact_link_container(
         self, accessible, top_level
@@ -552,6 +608,13 @@ class AccessibilityTree:
         except Exception:
             pass
         nodes = [self.node(item) for item in accessibles]
+        self._mark_hyperlink_at_point(
+            accessibles,
+            nodes,
+            application_name,
+            x,
+            y,
+        )
         self._mark_linked_click_target(
             accessibles, nodes, application_name, top_level
         )
@@ -711,8 +774,27 @@ class ContextWorker(threading.Thread):
                 x, y, current_generation, window = self.points.wait(
                     current_generation, 0
                 )
-                self.last_report = self.tree.report_at(x, y, window)
+                report = self.tree.report_at(x, y, window)
                 last_query = time.monotonic()
+                (
+                    _latest_x,
+                    _latest_y,
+                    latest_generation,
+                    _latest_window,
+                ) = self.points.wait(current_generation, 0)
+                if latest_generation != current_generation:
+                    # The accessibility result belongs to the old pointer
+                    # location. The daemon has already invalidated its cache
+                    # from raw motion; immediately classify the newer point
+                    # instead of publishing this stale decision.
+                    generation = current_generation
+                    log.debug(
+                        "discarded stale context generation %d; latest is %d",
+                        current_generation,
+                        latest_generation,
+                    )
+                    continue
+                self.last_report = report
                 generation = current_generation
                 queried = True
                 if self.last_report.decision == Decision.UNKNOWN:

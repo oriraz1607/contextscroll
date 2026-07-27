@@ -99,6 +99,13 @@ impl ContextCache {
             .store(self.elapsed_millis().max(1), Ordering::Release);
     }
 
+    pub fn invalidate(&self) {
+        // Raw pointer motion can reach the input daemon before the desktop
+        // helper has classified the new coordinate. Make that gap fail native
+        // instead of reusing a scroll decision from the previous location.
+        self.updated_millis.store(0, Ordering::Release);
+    }
+
     pub fn current(&self, unknown_action: Decision) -> Decision {
         let updated = self.updated_millis.load(Ordering::Acquire);
         let age = self.elapsed_millis().saturating_sub(updated);
@@ -141,5 +148,13 @@ mod tests {
         let cache = ContextCache::new();
         cache.update(Decision::Scroll);
         assert_eq!(cache.current(Decision::Native), Decision::Scroll);
+    }
+
+    #[test]
+    fn pointer_motion_invalidates_a_cached_scroll_decision() {
+        let cache = ContextCache::new();
+        cache.update(Decision::Scroll);
+        cache.invalidate();
+        assert_eq!(cache.current(Decision::Native), Decision::Native);
     }
 }

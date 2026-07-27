@@ -28,6 +28,12 @@ class FakeComponent:
     def get_extents(self, _coordinate_type):
         return self.extents
 
+    def contains(self, x, y, _coordinate_type):
+        return (
+            self.extents.x <= x < self.extents.x + self.extents.width
+            and self.extents.y <= y < self.extents.y + self.extents.height
+        )
+
 
 class FakeAccessible:
     def __init__(
@@ -74,6 +80,9 @@ class FakeSemanticAccessible:
 
     def get_component_iface(self):
         return self.component
+
+    def is_component(self):
+        return self.component is not None
 
 
 class ContextTreeTests(unittest.TestCase):
@@ -239,6 +248,31 @@ class ContextTreeTests(unittest.TestCase):
 
         self.assertFalse(nodes[0].hyperlink_target)
 
+    def test_finds_link_at_point_when_hit_test_returns_plain_text(self):
+        link = FakeSemanticAccessible(
+            "link",
+            extents=SimpleNamespace(
+                x=300, y=400, width=120, height=24
+            ),
+        )
+        comment = FakeSemanticAccessible(
+            "section",
+            children=[
+                FakeSemanticAccessible("static"),
+                link,
+            ],
+        )
+        tree = AccessibilityTree(
+            SimpleNamespace(CoordType=SimpleNamespace(SCREEN=1))
+        )
+
+        self.assertTrue(
+            tree._has_hyperlink_at_point(comment, 350, 410)
+        )
+        self.assertFalse(
+            tree._has_hyperlink_at_point(comment, 500, 410)
+        )
+
 
 class ContextWorkerTests(unittest.TestCase):
     def test_receives_daemon_activity_transitions(self):
@@ -317,6 +351,49 @@ class ContextWorkerTests(unittest.TestCase):
 
         self.assertEqual(tree.calls, 2)
         self.assertEqual(tree.assertion, (10, 20, None))
+
+    def test_discards_result_when_pointer_moves_during_lookup(self):
+        stop = threading.Event()
+
+        class MovingPoint:
+            def __init__(self):
+                self.calls = 0
+
+            def wait(self, _generation, _timeout):
+                self.calls += 1
+                if self.calls <= 2:
+                    return 10, 20, 1, None
+                return 11, 20, 2, None
+
+        class FakeTree:
+            def __init__(self):
+                self.calls = 0
+
+            def report_at(self, x, y, window):
+                self.calls += 1
+                if self.calls == 1:
+                    return ContextReport(Decision.SCROLL, x=x, y=y)
+                stop.set()
+                return ContextReport(Decision.NATIVE, x=x, y=y)
+
+        tree = FakeTree()
+        worker = ContextWorker(
+            tree=tree,
+            points=MovingPoint(),
+            socket_path="/not-used",
+            stop=stop,
+        )
+        sent = []
+        worker._send = lambda: sent.append(worker.last_report)
+        worker._receive_activity = lambda: None
+
+        worker.run()
+
+        self.assertEqual(tree.calls, 2)
+        self.assertEqual(worker.last_report.decision, Decision.NATIVE)
+        self.assertTrue(
+            all(report.decision != Decision.SCROLL for report in sent)
+        )
 
 
 if __name__ == "__main__":
