@@ -129,10 +129,10 @@ First stop any other daemon that exclusively grabs the same mouse.
 For a one-command install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oriraz1607/contextscroll/v0.2.0/scripts/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oriraz1607/contextscroll/v0.2.1/scripts/bootstrap.sh | bash
 ```
 
-The bootstrap creates a temporary shallow checkout of the immutable `v0.2.0`
+The bootstrap creates a temporary shallow checkout of the immutable `v0.2.1`
 release, runs the normal installer, and removes the checkout afterward.
 
 To install from an existing checkout instead:
