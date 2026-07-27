@@ -15,7 +15,7 @@ if [[ -n $desktop_user && $desktop_user != root ]]; then
     sudo -u "$desktop_user" \
         XDG_RUNTIME_DIR="/run/user/$desktop_uid" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$desktop_uid/bus" \
-        gnome-extensions disable contextscroll-pointer@local 2>/dev/null || true
+        gnome-extensions disable contextscroll-pointer@contextscroll 2>/dev/null || true
     if [[ -x /usr/lib/contextscroll/set-extension-enabled ]]; then
         sudo -u "$desktop_user" \
             XDG_RUNTIME_DIR="/run/user/$desktop_uid" \
@@ -23,7 +23,7 @@ if [[ -n $desktop_user && $desktop_user != root ]]; then
             /usr/lib/contextscroll/set-extension-enabled disable || true
     fi
     if [[ -n $desktop_home && $desktop_home == /* && $desktop_home != / ]]; then
-        user_extension="$desktop_home/.local/share/gnome-shell/extensions/contextscroll-pointer@local"
+        user_extension="$desktop_home/.local/share/gnome-shell/extensions/contextscroll-pointer@contextscroll"
         if [[ -d $user_extension ]]; then
             rm -rf -- "$user_extension"
         fi
@@ -37,7 +37,7 @@ rm -f /usr/bin/contextscroll
 rm -f /usr/bin/contextscroll-context
 rm -f /usr/lib/systemd/system/contextscroll.service
 rm -f /usr/lib/systemd/user/contextscroll-context.service
-rm -rf /usr/share/gnome-shell/extensions/contextscroll-pointer@local
+rm -rf /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll
 rm -rf /usr/lib/contextscroll
 
 systemctl daemon-reload

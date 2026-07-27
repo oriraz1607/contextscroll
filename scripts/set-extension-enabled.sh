@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-uuid=contextscroll-pointer@local
+uuid=contextscroll-pointer@contextscroll
 mode=${1:-}
 
 case "$mode" in

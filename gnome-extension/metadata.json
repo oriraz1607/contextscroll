@@ -1,7 +1,7 @@
 {
-  "uuid": "contextscroll-pointer@local",
+  "uuid": "contextscroll-pointer@contextscroll",
   "name": "ContextScroll Pointer Bridge",
   "description": "Provides Wayland pointer context and the active autoscroll cursor for ContextScroll.",
   "shell-version": ["48", "49", "50"],
-  "version": 7
+  "version": 8
 }

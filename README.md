@@ -26,7 +26,7 @@ pointer until autoscroll stops.
 
 ContextScroll is two deliberately separate processes:
 
-1. The tiny `contextscroll-pointer@local` GNOME Shell extension publishes
+1. The tiny `contextscroll-pointer@contextscroll` GNOME Shell extension publishes
    compositor pointer coordinates and the window beneath them at no more
    than 60 Hz.
 2. `contextscroll-context` runs as your desktop user. It combines those

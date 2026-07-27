@@ -64,11 +64,9 @@ export default class ContextScrollPointerExtension extends Extension {
             ),
         });
         this._cursorIcon.hide();
-        Main.layoutManager.addTopChrome(this._cursorIcon, {
-            affectsInputRegion: false,
-            affectsStruts: false,
-            trackFullscreen: true,
-        });
+        // A non-reactive top-chrome actor stays above application windows
+        // without participating in pointer picking.
+        Main.layoutManager.addTopChrome(this._cursorIcon);
         this._dbus = Gio.DBusExportedObject.wrapJSObject(
             INTERFACE_XML,
             this

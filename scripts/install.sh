@@ -49,15 +49,15 @@ install -m644 contextscroll/protocol.py /usr/lib/contextscroll/contextscroll/
 install -m755 scripts/set-extension-enabled.sh \
     /usr/lib/contextscroll/set-extension-enabled
 install -Dm644 gnome-extension/metadata.json \
-    /usr/share/gnome-shell/extensions/contextscroll-pointer@local/metadata.json
+    /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/metadata.json
 install -Dm644 gnome-extension/extension.js \
-    /usr/share/gnome-shell/extensions/contextscroll-pointer@local/extension.js
+    /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/extension.js
 install -Dm644 gnome-extension/icons/autoscroll-cursor.svg \
-    /usr/share/gnome-shell/extensions/contextscroll-pointer@local/autoscroll-cursor.svg
+    /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/autoscroll-cursor.svg
 if [[ -n $desktop_user && $desktop_user != root ]]; then
     desktop_home=$(getent passwd "$desktop_user" | cut -d: -f6)
     desktop_group=$(id -gn "$desktop_user")
-    user_extension="$desktop_home/.local/share/gnome-shell/extensions/contextscroll-pointer@local"
+    user_extension="$desktop_home/.local/share/gnome-shell/extensions/contextscroll-pointer@contextscroll"
     install -d -m755 -o "$desktop_user" -g "$desktop_group" \
         "$user_extension"
     install -m644 -o "$desktop_user" -g "$desktop_group" \
@@ -107,11 +107,11 @@ if [[ -n $desktop_user && $desktop_user != root ]]; then
     sudo -u "$desktop_user" \
         XDG_RUNTIME_DIR="/run/user/$desktop_uid" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$desktop_uid/bus" \
-        gnome-extensions disable contextscroll-pointer@local || true
+        gnome-extensions disable contextscroll-pointer@contextscroll || true
     sudo -u "$desktop_user" \
         XDG_RUNTIME_DIR="/run/user/$desktop_uid" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$desktop_uid/bus" \
-        gnome-extensions enable contextscroll-pointer@local || true
+        gnome-extensions enable contextscroll-pointer@contextscroll || true
     sudo -u "$desktop_user" \
         XDG_RUNTIME_DIR="/run/user/$desktop_uid" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$desktop_uid/bus" \
