@@ -24,13 +24,15 @@ Highlights:
   tables, trees, and standard desktop scroll panes;
 - GNOME Wayland support through the included Shell extension and X11 support
   through Xlib;
-- no hold threshold, click timeout, screenshot capture, or injected click
-  latency.
+- no hold threshold, screenshot capture, or configurable latency parameter;
+  fresh semantic decisions route immediately.
 
 On GNOME Wayland, the normal pointer changes to a compact black four-direction
 autoscroll cursor with a white outline while autoscroll is active. The
-replacement cursor is click-through and follows the physical pointer until
-autoscroll stops.
+replacement cursor is click-through and follows physical mouse movement while
+the hidden compositor pointer remains anchored at the activation point. This
+keeps Chromium's tab strip away from generated wheel events without making the
+cursor appear frozen. When autoscroll stops, the real pointer rejoins it.
 
 ## How it works
 
@@ -45,11 +47,11 @@ ContextScroll is two deliberately separate processes:
    On X11 it samples coordinates through Xlib instead.
 3. `contextscroll` is a small Rust system daemon. It mirrors physical mice
    through evdev/uinput and keeps the most recent classification in a
-   lock-free cache. It reports only the aggregate active/inactive state back
-   to the session helper.
+   lock-free cache. It reports the aggregate active/inactive state and, when
+   needed, a monotonic refresh request ID back to the session helper.
 
-When the middle button is pressed, the Rust path reads two atomics and makes
-the decision immediately:
+When the middle button is pressed with fresh context, the Rust path reads two
+atomics and makes the decision immediately:
 
 | Context under pointer | Result |
 | --- | --- |
@@ -65,10 +67,15 @@ left-click and context-menu actions on much of a page; those do not prove that
 middle-click has a native meaning and therefore do not disable autoscroll.
 Broad actions exposed by a document root or window frame are ignored as well.
 
-The helper sends context before a click happens. Its AT-SPI and desktop D-Bus
-work stays on the graphical session's GLib thread, while the Rust click path
-only reads a precomputed cache. It never performs AT-SPI, D-Bus, subprocess,
-image-recognition, or network work in the click handler.
+Raw mouse movement can arrive just before GNOME publishes its new pointer
+position. If that motion invalidated the cache, the daemon requests an
+acknowledged hit-test and waits for at most 60 ms before safely falling back to
+native middle-click. This bounded refresh applies only to stale or unknown
+context; it is not a fixed delay.
+
+AT-SPI and desktop D-Bus work stays on the graphical session's GLib thread.
+The Rust click path never performs AT-SPI, D-Bus, subprocess,
+image-recognition, or network work itself.
 
 ## Desktop support
 
@@ -129,10 +136,10 @@ First stop any other daemon that exclusively grabs the same mouse.
 For a one-command install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oriraz1607/contextscroll/v0.2.1/scripts/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oriraz1607/contextscroll/v0.3.0/scripts/bootstrap.sh | bash
 ```
 
-The bootstrap creates a temporary shallow checkout of the immutable `v0.2.1`
+The bootstrap creates a temporary shallow checkout of the immutable `v0.3.0`
 release, runs the normal installer, and removes the checkout afterward.
 
 To install from an existing checkout instead:
@@ -178,11 +185,17 @@ The default interaction is toggle mode:
 
 1. Point at the body of a web page or other scrollable content.
 2. Middle-click once.
-3. Move away from the origin to control speed and direction.
+3. Move the physical mouse to control speed and direction. The replacement
+   cursor follows you while wheel events remain on the original content.
 4. Click any mouse button to stop. The stopping click is consumed.
 
+Clearly vertical or horizontal gestures lock to their dominant axis, preventing
+small sideways jitter from becoming browser navigation. Deliberate diagonal
+movement keeps both axes available.
+
 Point at a browser tab, link, button, menu, or editable field and middle-click
-normally. Both the press and release are forwarded without waiting.
+normally. With fresh context, both the press and release are forwarded
+immediately.
 
 Hold mode is also available in `/etc/contextscroll.conf`:
 
@@ -190,7 +203,7 @@ Hold mode is also available in `/etc/contextscroll.conf`:
 MODE = hold
 ```
 
-In hold mode the pointer remains anchored while the middle button is held.
+In hold mode, keep the middle button held while moving the physical mouse.
 Release the button to stop.
 
 After changing configuration:

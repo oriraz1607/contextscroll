@@ -1,5 +1,6 @@
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -47,10 +48,18 @@ pub struct ContextMessage {
     #[serde(rename = "type")]
     pub message_type: String,
     pub decision: String,
+    #[serde(default)]
+    pub request_id: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContextUpdate {
+    pub decision: Decision,
+    pub request_id: u64,
 }
 
 impl ContextMessage {
-    pub fn parse(line: &[u8]) -> Result<Decision, String> {
+    pub fn parse(line: &[u8]) -> Result<ContextUpdate, String> {
         if line.len() > MAX_LINE_BYTES {
             return Err("context message is too large".to_owned());
         }
@@ -58,10 +67,14 @@ impl ContextMessage {
         if message.v != PROTOCOL_VERSION || message.message_type != "context" {
             return Err("unsupported context protocol message".to_owned());
         }
-        message
+        let decision = message
             .decision
             .parse()
-            .map_err(|error: crate::config::ConfigError| error.to_string())
+            .map_err(|error: crate::config::ConfigError| error.to_string())?;
+        Ok(ContextUpdate {
+            decision,
+            request_id: message.request_id,
+        })
     }
 }
 
@@ -70,6 +83,9 @@ pub struct ContextCache {
     started: Instant,
     decision: AtomicU8,
     updated_millis: AtomicU64,
+    acknowledged_request: AtomicU64,
+    wait_lock: Mutex<()>,
+    wait_condition: Condvar,
 }
 
 impl Default for ContextCache {
@@ -84,6 +100,9 @@ impl ContextCache {
             started: Instant::now(),
             decision: AtomicU8::new(Decision::Unknown as u8),
             updated_millis: AtomicU64::new(0),
+            acknowledged_request: AtomicU64::new(0),
+            wait_lock: Mutex::new(()),
+            wait_condition: Condvar::new(),
         }
     }
 
@@ -91,12 +110,20 @@ impl ContextCache {
         self.started.elapsed().as_millis().min(u64::MAX as u128) as u64
     }
 
-    pub fn update(&self, decision: Decision) {
+    pub fn update(&self, update: ContextUpdate) {
+        let _guard = self
+            .wait_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         // Store the value before its release timestamp. A reader acquiring the
         // timestamp will then observe the corresponding decision.
-        self.decision.store(decision as u8, Ordering::Relaxed);
+        self.decision
+            .store(update.decision as u8, Ordering::Relaxed);
         self.updated_millis
             .store(self.elapsed_millis().max(1), Ordering::Release);
+        self.acknowledged_request
+            .fetch_max(update.request_id, Ordering::Release);
+        self.wait_condition.notify_all();
     }
 
     pub fn invalidate(&self) {
@@ -119,6 +146,36 @@ impl ContextCache {
             decision
         }
     }
+
+    pub fn needs_refresh(&self) -> bool {
+        let updated = self.updated_millis.load(Ordering::Acquire);
+        updated == 0
+            || self.elapsed_millis().saturating_sub(updated) > MAX_CONTEXT_AGE.as_millis() as u64
+            || Decision::from_atomic(self.decision.load(Ordering::Relaxed)) == Decision::Unknown
+    }
+
+    pub fn wait_for_request(
+        &self,
+        request_id: u64,
+        timeout: Duration,
+        unknown_action: Decision,
+    ) -> Decision {
+        let guard = self
+            .wait_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _wait_result = self
+            .wait_condition
+            .wait_timeout_while(guard, timeout, |_| {
+                self.acknowledged_request.load(Ordering::Acquire) < request_id
+            })
+            .unwrap_or_else(|error| error.into_inner());
+        if self.acknowledged_request.load(Ordering::Acquire) < request_id {
+            unknown_action
+        } else {
+            self.current(unknown_action)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -134,7 +191,13 @@ mod tests {
     #[test]
     fn parses_current_protocol() {
         let line = br#"{"v":1,"type":"context","decision":"scroll","role":"document web"}"#;
-        assert_eq!(ContextMessage::parse(line).unwrap(), Decision::Scroll);
+        assert_eq!(
+            ContextMessage::parse(line).unwrap(),
+            ContextUpdate {
+                decision: Decision::Scroll,
+                request_id: 0,
+            }
+        );
     }
 
     #[test]
@@ -146,15 +209,47 @@ mod tests {
     #[test]
     fn update_is_visible_without_locking() {
         let cache = ContextCache::new();
-        cache.update(Decision::Scroll);
+        cache.update(ContextUpdate {
+            decision: Decision::Scroll,
+            request_id: 0,
+        });
         assert_eq!(cache.current(Decision::Native), Decision::Scroll);
     }
 
     #[test]
     fn pointer_motion_invalidates_a_cached_scroll_decision() {
         let cache = ContextCache::new();
-        cache.update(Decision::Scroll);
+        cache.update(ContextUpdate {
+            decision: Decision::Scroll,
+            request_id: 0,
+        });
         cache.invalidate();
         assert_eq!(cache.current(Decision::Native), Decision::Native);
+    }
+
+    #[test]
+    fn acknowledged_refresh_returns_the_new_decision() {
+        let cache = ContextCache::new();
+        cache.update(ContextUpdate {
+            decision: Decision::Scroll,
+            request_id: 7,
+        });
+        assert_eq!(
+            cache.wait_for_request(7, Duration::from_millis(1), Decision::Native,),
+            Decision::Scroll
+        );
+    }
+
+    #[test]
+    fn unacknowledged_heartbeat_cannot_satisfy_a_refresh() {
+        let cache = ContextCache::new();
+        cache.update(ContextUpdate {
+            decision: Decision::Scroll,
+            request_id: 0,
+        });
+        assert_eq!(
+            cache.wait_for_request(8, Duration::from_millis(1), Decision::Native,),
+            Decision::Native
+        );
     }
 }

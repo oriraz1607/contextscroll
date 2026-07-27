@@ -21,11 +21,23 @@ class ContextReport:
     name: str = ""
     x: int | None = None
     y: int | None = None
+    request_id: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class ActivityReport:
     active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RefreshReport:
+    request_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class CursorReport:
+    x: int
+    y: int
 
 
 def encode(report: ContextReport) -> bytes:
@@ -38,6 +50,7 @@ def encode(report: ContextReport) -> bytes:
         "name": report.name[:160],
         "x": report.x,
         "y": report.y,
+        "request_id": report.request_id,
     }
     return json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n"
 
@@ -79,24 +92,60 @@ def decode(line: bytes) -> ContextReport:
         name=text("name", 160),
         x=coordinate("x"),
         y=coordinate("y"),
+        request_id=request_id(payload),
     )
 
 
-def decode_activity(line: bytes) -> ActivityReport:
+def request_id(payload: dict) -> int:
+    value = payload.get("request_id", 0)
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value <= 2**64 - 1
+    ):
+        raise ValueError("request_id is out of range")
+    return value
+
+
+def decode_daemon(
+    line: bytes,
+) -> ActivityReport | RefreshReport | CursorReport:
     if len(line) > MAX_LINE_BYTES:
-        raise ValueError("activity report is too large")
+        raise ValueError("daemon report is too large")
     try:
         payload = json.loads(line)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError("invalid JSON") from error
-    if (
-        not isinstance(payload, dict)
-        or payload.get("v") != PROTOCOL_VERSION
-        or payload.get("type") != "activity"
-        or not isinstance(payload.get("active"), bool)
+    if not isinstance(payload, dict) or payload.get("v") != PROTOCOL_VERSION:
+        raise ValueError("invalid daemon report")
+    if payload.get("type") == "activity" and isinstance(
+        payload.get("active"), bool
     ):
+        return ActivityReport(payload["active"])
+    if payload.get("type") == "refresh":
+        value = request_id(payload)
+        if value > 0:
+            return RefreshReport(value)
+    if payload.get("type") == "cursor":
+        coordinates = []
+        for key in ("x", "y"):
+            value = payload.get(key)
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or not -1_000_000 <= value <= 1_000_000
+            ):
+                raise ValueError(f"{key} is out of range")
+            coordinates.append(value)
+        return CursorReport(*coordinates)
+    raise ValueError("invalid daemon report")
+
+
+def decode_activity(line: bytes) -> ActivityReport:
+    report = decode_daemon(line)
+    if not isinstance(report, ActivityReport):
         raise ValueError("invalid activity report")
-    return ActivityReport(payload["active"])
+    return report
 
 
 class ContextRegistry:

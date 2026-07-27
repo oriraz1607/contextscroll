@@ -6,11 +6,11 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use contextscroll::config::Settings;
-use contextscroll::context::{ContextCache, ContextMessage, Decision, MAX_LINE_BYTES};
+use contextscroll::context::{ContextCache, ContextMessage, ContextUpdate, MAX_LINE_BYTES};
 use contextscroll::engine::{Interaction, Route, WheelAccumulator};
 use evdev::uinput::VirtualDevice;
 use evdev::{
@@ -30,6 +30,13 @@ const DEFAULT_CONFIG: &str = "/etc/contextscroll.conf";
 const VIRTUAL_NAME_PREFIX: &str = "ContextScroll virtual: ";
 const BUTTON_MIN: u16 = 0x110;
 const BUTTON_MAX_EXCLUSIVE: u16 = 0x120;
+const CONTEXT_REFRESH_GRACE: Duration = Duration::from_millis(60);
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CursorOffset {
+    x: i32,
+    y: i32,
+}
 
 #[derive(Debug)]
 struct Arguments {
@@ -40,22 +47,32 @@ struct Arguments {
 }
 
 #[derive(Debug)]
-struct Activity {
+struct DaemonSignals {
     active_devices: AtomicUsize,
-    sender: watch::Sender<bool>,
+    activity_sender: watch::Sender<bool>,
+    next_refresh_id: AtomicU64,
+    refresh_sender: watch::Sender<u64>,
+    cursor_sender: watch::Sender<CursorOffset>,
 }
 
-impl Activity {
-    fn new(sender: watch::Sender<bool>) -> Self {
+impl DaemonSignals {
+    fn new(
+        activity_sender: watch::Sender<bool>,
+        refresh_sender: watch::Sender<u64>,
+        cursor_sender: watch::Sender<CursorOffset>,
+    ) -> Self {
         Self {
             active_devices: AtomicUsize::new(0),
-            sender,
+            activity_sender,
+            next_refresh_id: AtomicU64::new(0),
+            refresh_sender,
+            cursor_sender,
         }
     }
 
     fn start(&self) {
         if self.active_devices.fetch_add(1, Ordering::SeqCst) == 0 {
-            self.sender.send_replace(true);
+            self.activity_sender.send_replace(true);
         }
     }
 
@@ -63,8 +80,24 @@ impl Activity {
         let previous = self.active_devices.fetch_sub(1, Ordering::SeqCst);
         debug_assert!(previous > 0);
         if previous == 1 {
-            self.sender.send_replace(false);
+            self.activity_sender.send_replace(false);
         }
+    }
+
+    fn set_cursor_offset(&self, x: f64, y: f64) {
+        let offset = CursorOffset {
+            x: x.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32,
+            y: y.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32,
+        };
+        if *self.cursor_sender.borrow() != offset {
+            self.cursor_sender.send_replace(offset);
+        }
+    }
+
+    fn request_refresh(&self) -> u64 {
+        let request_id = self.next_refresh_id.fetch_add(1, Ordering::SeqCst) + 1;
+        self.refresh_sender.send_replace(request_id);
+        request_id
     }
 }
 
@@ -221,7 +254,7 @@ fn run_mouse(
     mut device: Device,
     settings: Arc<Settings>,
     cache: Arc<ContextCache>,
-    activity: Arc<Activity>,
+    signals: Arc<DaemonSignals>,
     shutdown: Arc<AtomicBool>,
     debug_enabled: bool,
 ) -> Result<(), AnyError> {
@@ -265,7 +298,31 @@ fn run_mouse(
                     let value = event.value();
 
                     if event_type == EventType::KEY && is_button(code) {
-                        let decision = cache.current(settings.unknown_action);
+                        let middle_press = code == KeyCode::BTN_MIDDLE.0 && value == 1;
+                        let decision = if middle_press && cache.needs_refresh() {
+                            if !batch.is_empty() {
+                                // Publish preceding pointer motion before
+                                // asking the desktop helper to hit-test its
+                                // resulting compositor position.
+                                output.emit(&batch)?;
+                                batch.clear();
+                            }
+                            let request_id = signals.request_refresh();
+                            debug(
+                                debug_enabled,
+                                format!(
+                                    "{}: requesting context refresh {request_id}",
+                                    path.display()
+                                ),
+                            );
+                            cache.wait_for_request(
+                                request_id,
+                                CONTEXT_REFRESH_GRACE,
+                                settings.unknown_action,
+                            )
+                        } else {
+                            cache.current(settings.unknown_action)
+                        };
                         let route = interaction.button(
                             code,
                             value,
@@ -294,7 +351,8 @@ fn run_mouse(
                             Route::Consume => {}
                             Route::Start => {
                                 if !announced_active {
-                                    activity.start();
+                                    signals.set_cursor_offset(0.0, 0.0);
+                                    signals.start();
                                     announced_active = true;
                                 }
                                 wheel.clear();
@@ -310,7 +368,7 @@ fn run_mouse(
                             }
                             Route::Stop => {
                                 if announced_active {
-                                    activity.stop();
+                                    signals.stop();
                                     announced_active = false;
                                 }
                                 wheel.clear();
@@ -352,9 +410,15 @@ fn run_mouse(
                     }
 
                     if event_type == EventType::SYNCHRONIZATION {
-                        if code == SynchronizationCode::SYN_REPORT.0 && !batch.is_empty() {
-                            output.emit(&batch)?;
-                            batch.clear();
+                        if code == SynchronizationCode::SYN_REPORT.0 {
+                            interaction.finish_motion_batch(settings.deadzone_px);
+                            if interaction.scrolling {
+                                signals.set_cursor_offset(interaction.dx, interaction.dy);
+                            }
+                            if !batch.is_empty() {
+                                output.emit(&batch)?;
+                                batch.clear();
+                            }
                         }
                         continue;
                     }
@@ -421,7 +485,7 @@ fn run_mouse(
         let _ = output.emit(&releases);
     }
     if announced_active {
-        activity.stop();
+        signals.stop();
     }
     eprintln!("INFO: released {}", path.display());
     result
@@ -441,7 +505,7 @@ fn uid_has_desktop_session(uid: u32) -> bool {
 async fn read_context_message<R>(
     reader: &mut R,
     line: &mut Vec<u8>,
-) -> Result<Option<Decision>, AnyError>
+) -> Result<Option<ContextUpdate>, AnyError>
 where
     R: AsyncBufRead + Unpin,
 {
@@ -476,10 +540,24 @@ fn activity_message(active: bool) -> &'static [u8] {
     }
 }
 
+fn refresh_message(request_id: u64) -> Vec<u8> {
+    format!("{{\"v\":1,\"type\":\"refresh\",\"request_id\":{request_id}}}\n").into_bytes()
+}
+
+fn cursor_message(offset: CursorOffset) -> Vec<u8> {
+    format!(
+        "{{\"v\":1,\"type\":\"cursor\",\"x\":{},\"y\":{}}}\n",
+        offset.x, offset.y
+    )
+    .into_bytes()
+}
+
 async fn handle_context_client(
     stream: UnixStream,
     cache: Arc<ContextCache>,
     mut activity: watch::Receiver<bool>,
+    mut refresh_requests: watch::Receiver<u64>,
+    mut cursor: watch::Receiver<CursorOffset>,
     debug_enabled: bool,
 ) -> Result<(), AnyError> {
     let credentials = stream.peer_cred()?;
@@ -495,21 +573,54 @@ async fn handle_context_client(
     write_half
         .write_all(activity_message(initial_activity))
         .await?;
+    let initial_cursor = *cursor.borrow();
+    write_half
+        .write_all(&cursor_message(initial_cursor))
+        .await?;
     loop {
         tokio::select! {
             changed = activity.changed() => {
                 changed?;
                 let active = *activity.borrow_and_update();
+                if !active {
+                    // Make the final visual position precede deactivation on
+                    // the wire, even when Tokio selects the activity watch
+                    // before a pending cursor-watch notification.
+                    let offset = *cursor.borrow();
+                    write_half
+                        .write_all(&cursor_message(offset))
+                        .await?;
+                }
                 write_half
                     .write_all(activity_message(active))
                     .await?;
             }
+            changed = refresh_requests.changed() => {
+                changed?;
+                let request_id = *refresh_requests.borrow_and_update();
+                write_half
+                    .write_all(&refresh_message(request_id))
+                    .await?;
+            }
+            changed = cursor.changed() => {
+                changed?;
+                let offset = *cursor.borrow_and_update();
+                write_half
+                    .write_all(&cursor_message(offset))
+                    .await?;
+            }
             message = read_context_message(&mut reader, &mut line) => {
-                let Some(decision) = message? else {
+                let Some(update) = message? else {
                     break;
                 };
-                cache.update(decision);
-                debug(debug_enabled, format!("context updated to {decision:?}"));
+                cache.update(update);
+                debug(
+                    debug_enabled,
+                    format!(
+                        "context updated to {:?} request={}",
+                        update.decision, update.request_id
+                    ),
+                );
             }
         }
     }
@@ -520,6 +631,8 @@ async fn context_server(
     path: PathBuf,
     cache: Arc<ContextCache>,
     activity: watch::Receiver<bool>,
+    refresh_requests: watch::Receiver<u64>,
+    cursor: watch::Receiver<CursorOffset>,
     debug_enabled: bool,
 ) -> Result<(), AnyError> {
     if let Some(parent) = path.parent() {
@@ -537,9 +650,18 @@ async fn context_server(
         let (stream, _) = listener.accept().await?;
         let client_cache = Arc::clone(&cache);
         let client_activity = activity.clone();
+        let client_refresh_requests = refresh_requests.clone();
+        let client_cursor = cursor.clone();
         tokio::spawn(async move {
-            if let Err(error) =
-                handle_context_client(stream, client_cache, client_activity, debug_enabled).await
+            if let Err(error) = handle_context_client(
+                stream,
+                client_cache,
+                client_activity,
+                client_refresh_requests,
+                client_cursor,
+                debug_enabled,
+            )
+            .await
             {
                 debug(debug_enabled, format!("context client closed: {error}"));
             }
@@ -576,12 +698,20 @@ async fn run(arguments: Arguments) -> Result<(), AnyError> {
 
     let cache = Arc::new(ContextCache::new());
     let (activity_sender, activity_receiver) = watch::channel(false);
-    let activity = Arc::new(Activity::new(activity_sender));
+    let (refresh_sender, refresh_receiver) = watch::channel(0);
+    let (cursor_sender, cursor_receiver) = watch::channel(CursorOffset::default());
+    let signals = Arc::new(DaemonSignals::new(
+        activity_sender,
+        refresh_sender,
+        cursor_sender,
+    ));
     let shutdown = Arc::new(AtomicBool::new(false));
     let socket_task = tokio::spawn(context_server(
         PathBuf::from(&settings.socket_path),
         Arc::clone(&cache),
         activity_receiver,
+        refresh_receiver,
+        cursor_receiver,
         arguments.debug,
     ));
     let mut device_tasks = HashMap::<PathBuf, JoinHandle<()>>::new();
@@ -606,7 +736,7 @@ async fn run(arguments: Arguments) -> Result<(), AnyError> {
                     }
                     let task_settings = Arc::clone(&settings);
                     let task_cache = Arc::clone(&cache);
-                    let task_activity = Arc::clone(&activity);
+                    let task_signals = Arc::clone(&signals);
                     let task_shutdown = Arc::clone(&shutdown);
                     let task_path = path.clone();
                     let debug_enabled = arguments.debug;
@@ -616,7 +746,7 @@ async fn run(arguments: Arguments) -> Result<(), AnyError> {
                             device,
                             task_settings,
                             task_cache,
-                            task_activity,
+                            task_signals,
                             task_shutdown,
                             debug_enabled,
                         ) {
@@ -663,13 +793,15 @@ mod tests {
     #[test]
     fn activity_tracks_multiple_mice() {
         let (sender, receiver) = watch::channel(false);
-        let activity = Activity::new(sender);
-        activity.start();
+        let (refresh_sender, _refresh_receiver) = watch::channel(0);
+        let (cursor_sender, _cursor_receiver) = watch::channel(CursorOffset::default());
+        let signals = DaemonSignals::new(sender, refresh_sender, cursor_sender);
+        signals.start();
         assert!(*receiver.borrow());
-        activity.start();
-        activity.stop();
+        signals.start();
+        signals.stop();
         assert!(*receiver.borrow());
-        activity.stop();
+        signals.stop();
         assert!(!*receiver.borrow());
     }
 
@@ -680,5 +812,59 @@ mod tests {
             b"{\"v\":1,\"type\":\"activity\",\"active\":true}\n"
         );
         assert!(activity_message(false).len() < MAX_LINE_BYTES);
+    }
+
+    #[test]
+    fn refresh_protocol_is_bounded_json() {
+        assert_eq!(
+            refresh_message(42),
+            b"{\"v\":1,\"type\":\"refresh\",\"request_id\":42}\n"
+        );
+        assert!(refresh_message(u64::MAX).len() < MAX_LINE_BYTES);
+    }
+
+    #[test]
+    fn cursor_protocol_is_bounded_json() {
+        assert_eq!(
+            cursor_message(CursorOffset { x: -42, y: 71 }),
+            b"{\"v\":1,\"type\":\"cursor\",\"x\":-42,\"y\":71}\n"
+        );
+        assert!(
+            cursor_message(CursorOffset {
+                x: i32::MIN,
+                y: i32::MAX
+            })
+            .len()
+                < MAX_LINE_BYTES
+        );
+    }
+
+    #[test]
+    fn cursor_offset_is_published_for_the_session_helper() {
+        let (activity_sender, _activity_receiver) = watch::channel(false);
+        let (refresh_sender, _refresh_receiver) = watch::channel(0);
+        let (cursor_sender, cursor_receiver) = watch::channel(CursorOffset::default());
+        let signals = DaemonSignals::new(activity_sender, refresh_sender, cursor_sender);
+
+        signals.start();
+        signals.set_cursor_offset(12.4, -9.7);
+        assert_eq!(*cursor_receiver.borrow(), CursorOffset { x: 12, y: -10 });
+        signals.stop();
+        // Preserve the visual position until Shell has moved the hidden
+        // compositor pointer there while deactivating the replacement.
+        assert_eq!(*cursor_receiver.borrow(), CursorOffset { x: 12, y: -10 });
+    }
+
+    #[test]
+    fn refresh_requests_are_monotonic() {
+        let (activity_sender, _activity_receiver) = watch::channel(false);
+        let (refresh_sender, refresh_receiver) = watch::channel(0);
+        let (cursor_sender, _cursor_receiver) = watch::channel(CursorOffset::default());
+        let signals = DaemonSignals::new(activity_sender, refresh_sender, cursor_sender);
+
+        assert_eq!(signals.request_refresh(), 1);
+        assert_eq!(*refresh_receiver.borrow(), 1);
+        assert_eq!(signals.request_refresh(), 2);
+        assert_eq!(*refresh_receiver.borrow(), 2);
     }
 }

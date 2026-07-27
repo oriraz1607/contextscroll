@@ -32,9 +32,11 @@ screenshots, clipboard contents, network resources, or application files.
 The Shell extension temporarily hides the native pointer and renders a
 non-reactive autoscroll cursor when the daemon reports that autoscroll is
 active. Cursor visibility uses GNOME's paired inhibit/uninhibit API, and the
-replacement overlay cannot receive input. A paired seat focus inhibitor keeps
-wheel events directed to the under-pointer application while the native
-cursor is hidden.
+replacement overlay cannot receive input. The overlay follows bounded
+daemon-provided relative offsets; when autoscroll ends, the extension warps
+the hidden pointer to the final visual position before revealing it. A paired
+seat focus inhibitor keeps wheel events directed to the under-pointer
+application while the native cursor is hidden.
 
 Its service exposes `/tmp/.X11-unix` read-only inside otherwise-private
 network and temporary-file namespaces.
@@ -53,13 +55,16 @@ The helper sends only:
 - decision: `native`, `scroll`, or `unknown`;
 - accessible role;
 - application and object names;
-- pointer coordinates.
+- pointer coordinates;
+- the monotonic ID of a refresh request being acknowledged.
 
 Names are used only for diagnostics and are not persisted.
 
-The daemon sends one aggregate boolean (`active`) back to the authenticated
-helper so it can show or hide the autoscroll cursor. It does not send input
-events, device identities, or application data to the user session.
+The daemon sends one aggregate boolean (`active`) and bounded relative cursor
+offsets back to the authenticated helper so it can render the autoscroll
+cursor. It can also send a monotonic refresh request ID after motion
+invalidates cached context. It does not send device identities or application
+data to the user session.
 
 ## Socket authentication
 
@@ -74,6 +79,7 @@ Messages use bounded newline-delimited JSON:
 - exact protocol version and message type;
 - an enumerated decision value;
 - a boolean active state in daemon-to-helper messages;
+- a bounded monotonic refresh request ID;
 - malformed or oversized input disconnects the client.
 
 ## Failure behavior
@@ -83,8 +89,11 @@ blocked, crashed, stale, or unable to recognize an application, the default
 action is `native`. Recognition failure therefore disables autoscroll rather
 than intercepting a middle click.
 
-The input daemon never queries the helper synchronously. A malicious or hung
-application accessibility implementation cannot delay a physical click.
+Fresh context is consumed without waiting. After raw pointer motion invalidates
+the cache, a middle-button press can request one acknowledged refresh and wait
+for at most 60 ms. If the helper or an application accessibility
+implementation does not answer in that bound, routing falls back to the
+configured safe action (`native` by default).
 
 ## Deliberate systemd exceptions
 

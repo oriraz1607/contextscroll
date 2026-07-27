@@ -441,6 +441,59 @@ class ContextWorkerTests(unittest.TestCase):
 
         self.assertEqual(changes, [False, True, False])
 
+    def test_refresh_request_schedules_a_fresh_pointer_sample(self):
+        class FakeConnection:
+            def __init__(self):
+                self.chunks = [
+                    b'{"v":1,"type":"refresh","request_id":23}\n'
+                ]
+
+            def recv(self, _size, _flags):
+                if self.chunks:
+                    return self.chunks.pop(0)
+                raise BlockingIOError
+
+        worker = ContextWorker(
+            tree=object(),
+            points=LatestPoint(),
+            socket_path="/not-used",
+            stop=threading.Event(),
+        )
+        worker.connection = FakeConnection()
+        refreshes = []
+        worker.set_refresh_callback(lambda: refreshes.append(True))
+
+        worker._receive_activity()
+
+        self.assertEqual(worker.pending_request_id, 23)
+        self.assertEqual(refreshes, [True])
+
+    def test_receives_visual_cursor_offsets(self):
+        class FakeConnection:
+            def __init__(self):
+                self.chunks = [
+                    b'{"v":1,"type":"cursor","x":-19,"y":27}\n'
+                ]
+
+            def recv(self, _size, _flags):
+                if self.chunks:
+                    return self.chunks.pop(0)
+                raise BlockingIOError
+
+        worker = ContextWorker(
+            tree=object(),
+            points=LatestPoint(),
+            socket_path="/not-used",
+            stop=threading.Event(),
+        )
+        worker.connection = FakeConnection()
+        offsets = []
+        worker.set_cursor_callback(lambda x, y: offsets.append((x, y)))
+
+        worker._receive_activity()
+
+        self.assertEqual(offsets, [(-19, 27)])
+
     def test_retries_unknown_without_pointer_movement(self):
         stop = threading.Event()
 

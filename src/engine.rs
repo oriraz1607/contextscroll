@@ -39,12 +39,21 @@ pub enum Route {
     Stop,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum AxisLock {
+    #[default]
+    None,
+    Horizontal,
+    Vertical,
+}
+
 #[derive(Debug, Default)]
 pub struct Interaction {
     pub scrolling: bool,
     native_middle_down: bool,
     starting_release_pending: bool,
     consumed_release: Option<u16>,
+    axis_lock: AxisLock,
     pub dx: f64,
     pub dy: f64,
 }
@@ -53,6 +62,7 @@ impl Interaction {
     pub fn stop(&mut self) {
         self.scrolling = false;
         self.starting_release_pending = false;
+        self.axis_lock = AxisLock::None;
         self.dx = 0.0;
         self.dy = 0.0;
     }
@@ -101,6 +111,7 @@ impl Interaction {
             }
             self.native_middle_down = false;
             self.scrolling = true;
+            self.axis_lock = AxisLock::None;
             self.dx = 0.0;
             self.dy = 0.0;
             if mode == Mode::Toggle {
@@ -126,13 +137,40 @@ impl Interaction {
         Route::Forward
     }
 
-    pub fn motion(&mut self, x: f64, y: f64, mode: Mode, maximum: f64) -> bool {
+    pub fn motion(&mut self, x: f64, y: f64, _mode: Mode, maximum: f64) -> bool {
         if !self.scrolling {
             return true;
         }
-        self.dx = (self.dx + x).clamp(-maximum, maximum);
-        self.dy = (self.dy + y).clamp(-maximum, maximum);
-        mode == Mode::Toggle
+        match self.axis_lock {
+            AxisLock::Horizontal => {
+                self.dx = (self.dx + x).clamp(-maximum, maximum);
+            }
+            AxisLock::Vertical => {
+                self.dy = (self.dy + y).clamp(-maximum, maximum);
+            }
+            AxisLock::None => {
+                self.dx = (self.dx + x).clamp(-maximum, maximum);
+                self.dy = (self.dy + y).clamp(-maximum, maximum);
+            }
+        }
+        // Keep the compositor pointer at the activation point. Forwarding
+        // toggle-mode motion allowed it to enter Chromium's tab strip, where
+        // the generated wheel events could switch tabs instead of scrolling
+        // the page that started the interaction.
+        false
+    }
+
+    pub fn finish_motion_batch(&mut self, deadzone: f64) {
+        if !self.scrolling || self.axis_lock != AxisLock::None {
+            return;
+        }
+        if self.dy.abs() > deadzone && self.dy.abs() >= self.dx.abs() * 1.5 {
+            self.axis_lock = AxisLock::Vertical;
+            self.dx = 0.0;
+        } else if self.dx.abs() > deadzone && self.dx.abs() >= self.dy.abs() * 1.5 {
+            self.axis_lock = AxisLock::Horizontal;
+            self.dy = 0.0;
+        }
     }
 }
 
@@ -248,6 +286,43 @@ mod tests {
             state.button(LEFT, 0, MIDDLE, Decision::Scroll, Mode::Toggle),
             Route::Consume
         );
+    }
+
+    #[test]
+    fn toggle_scroll_accumulates_motion_without_moving_pointer() {
+        let mut state = Interaction::default();
+        state.button(MIDDLE, 1, MIDDLE, Decision::Scroll, Mode::Toggle);
+
+        assert!(!state.motion(3.0, -8.0, Mode::Toggle, 1_200.0,));
+        assert_eq!(state.dx, 3.0);
+        assert_eq!(state.dy, -8.0);
+    }
+
+    #[test]
+    fn vertical_gesture_locks_out_horizontal_jitter() {
+        let mut state = Interaction::default();
+        state.button(MIDDLE, 1, MIDDLE, Decision::Scroll, Mode::Toggle);
+
+        state.motion(4.0, -30.0, Mode::Toggle, 1_200.0);
+        state.finish_motion_batch(15.0);
+        state.motion(-20.0, -40.0, Mode::Toggle, 1_200.0);
+
+        assert_eq!(state.dx, 0.0);
+        assert_eq!(state.dy, -70.0);
+        assert_eq!(state.axis_lock, AxisLock::Vertical);
+    }
+
+    #[test]
+    fn diagonal_gesture_keeps_both_axes_available() {
+        let mut state = Interaction::default();
+        state.button(MIDDLE, 1, MIDDLE, Decision::Scroll, Mode::Toggle);
+
+        state.motion(30.0, -30.0, Mode::Toggle, 1_200.0);
+        state.finish_motion_batch(15.0);
+
+        assert_eq!(state.dx, 30.0);
+        assert_eq!(state.dy, -30.0);
+        assert_eq!(state.axis_lock, AxisLock::None);
     }
 
     #[test]

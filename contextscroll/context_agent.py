@@ -2,8 +2,9 @@
 
 Recognition is deliberately performed ahead of input. Mouse events only update
 the point to inspect; a worker resolves and classifies the accessibility tree,
-then refreshes the daemon's cache. The root input daemon never waits for this
-process while handling a button event.
+then refreshes the daemon's cache. If pointer motion outruns that cache, the
+input daemon can request one acknowledged last-moment refresh before routing
+the middle-button press.
 """
 
 from __future__ import annotations
@@ -26,13 +27,21 @@ from .classifier import (
     normalize,
 )
 from .pointer import GnomeShellPointer, PointerUnavailable, X11Pointer
-from .protocol import MAX_LINE_BYTES, ContextReport, decode_activity, encode
+from .protocol import (
+    MAX_LINE_BYTES,
+    ActivityReport,
+    ContextReport,
+    CursorReport,
+    RefreshReport,
+    decode_daemon,
+    encode,
+)
 
 log = logging.getLogger("contextscroll.context")
 
 DEFAULT_SOCKET = "/run/contextscroll/context.sock"
 HEARTBEAT_SECONDS = 0.20
-STATE_POLL_SECONDS = 0.05
+STATE_POLL_SECONDS = 0.01
 MIN_QUERY_INTERVAL = 1.0 / 30.0
 UNKNOWN_RETRY_INITIAL_SECONDS = 0.075
 UNKNOWN_RETRY_MAX_SECONDS = 1.0
@@ -174,6 +183,13 @@ class LatestPoint:
             if self.generation == previous_generation:
                 self.condition.wait(timeout)
             return self.x, self.y, self.generation, self.window
+
+    def refresh(self) -> None:
+        with self.condition:
+            if self.x is None or self.y is None:
+                return
+            self.generation += 1
+            self.condition.notify()
 
 
 class AccessibilityTree:
@@ -717,8 +733,9 @@ class MainThreadAccessibility:
     """Run every libatspi traversal on the GLib main thread.
 
     Some libatspi/PyGObject combinations corrupt their cached objects when
-    they are traversed concurrently with the GLib loop. The worker may wait
-    for this ahead-of-click lookup, but the Rust input path never waits.
+    they are traversed concurrently with the GLib loop. The classifier worker
+    waits for traversal here; the Rust path normally consumes the precomputed
+    result and requests this work only when raw motion made it stale.
     """
 
     def __init__(self, tree, glib, stop: threading.Event):
@@ -766,10 +783,19 @@ class ContextWorker(threading.Thread):
         self.receive_buffer = bytearray()
         self.active = False
         self.active_callback = None
+        self.refresh_callback = None
+        self.cursor_callback = None
+        self.pending_request_id = 0
 
     def set_active_callback(self, callback) -> None:
         self.active_callback = callback
         callback(self.active)
+
+    def set_refresh_callback(self, callback) -> None:
+        self.refresh_callback = callback
+
+    def set_cursor_callback(self, callback) -> None:
+        self.cursor_callback = callback
 
     def _set_active(self, active: bool) -> None:
         if active == self.active:
@@ -837,12 +863,31 @@ class ContextWorker(threading.Thread):
                     self._disconnect()
                     return
                 try:
-                    report = decode_activity(line + b"\n")
+                    report = decode_daemon(line + b"\n")
                 except ValueError as error:
-                    log.warning("invalid daemon activity message: %s", error)
+                    log.warning("invalid daemon message: %s", error)
                     self._disconnect()
                     return
-                self._set_active(report.active)
+                if isinstance(report, ActivityReport):
+                    self._set_active(report.active)
+                elif isinstance(report, RefreshReport):
+                    self.pending_request_id = max(
+                        self.pending_request_id,
+                        report.request_id,
+                    )
+                    if self.refresh_callback is None:
+                        self.points.refresh()
+                    else:
+                        self.refresh_callback()
+                elif isinstance(report, CursorReport):
+                    if self.cursor_callback is not None:
+                        try:
+                            self.cursor_callback(report.x, report.y)
+                        except Exception as error:
+                            log.warning(
+                                "could not update autoscroll cursor: %s",
+                                error,
+                            )
             if len(self.receive_buffer) > MAX_LINE_BYTES:
                 self._disconnect()
                 break
@@ -904,7 +949,10 @@ class ContextWorker(threading.Thread):
                         latest_generation,
                     )
                     continue
-                self.last_report = report
+                self.last_report = replace(
+                    report,
+                    request_id=self.pending_request_id,
+                )
                 generation = current_generation
                 queried = True
                 if self.last_report.decision == Decision.UNKNOWN:
@@ -1033,6 +1081,33 @@ def main(argv=None) -> int:
         # The Shell-facing GDBusProxy remains on the GLib thread. The socket
         # worker publishes only the desired boolean state.
         worker.set_active_callback(update_indicator)
+
+        def update_cursor(x, y):
+            def apply_cursor():
+                if pointer is not None:
+                    pointer.set_indicator_offset(x, y)
+                return glib.SOURCE_REMOVE
+
+            glib.idle_add(
+                apply_cursor,
+                priority=glib.PRIORITY_HIGH,
+            )
+
+        worker.set_cursor_callback(update_cursor)
+
+        def refresh_pointer_context():
+            def apply_refresh():
+                if pointer is not None:
+                    points.update(*pointer.position())
+                    points.refresh()
+                return glib.SOURCE_REMOVE
+
+            glib.idle_add(
+                apply_refresh,
+                priority=glib.PRIORITY_HIGH,
+            )
+
+        worker.set_refresh_callback(refresh_pointer_context)
         points.update(*pointer.position())
         coordinate_source = "GNOME Shell coordinates"
     else:
@@ -1055,6 +1130,19 @@ def main(argv=None) -> int:
         pointer_source = glib.timeout_add(
             POINTER_SAMPLE_MILLISECONDS, sample_pointer
         )
+
+        def refresh_pointer_context():
+            def apply_refresh():
+                sample_pointer()
+                points.refresh()
+                return glib.SOURCE_REMOVE
+
+            glib.idle_add(
+                apply_refresh,
+                priority=glib.PRIORITY_HIGH,
+            )
+
+        worker.set_refresh_callback(refresh_pointer_context)
         sample_pointer()
         coordinate_source = "X11 coordinates"
 

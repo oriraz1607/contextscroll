@@ -30,6 +30,10 @@ const INTERFACE_XML = `
     <method name="SetIndicator">
       <arg type="b" name="active" direction="in"/>
     </method>
+    <method name="SetIndicatorOffset">
+      <arg type="i" name="x" direction="in"/>
+      <arg type="i" name="y" direction="in"/>
+    </method>
     <signal name="ContextChanged">
       <arg type="i" name="x"/>
       <arg type="i" name="y"/>
@@ -49,6 +53,10 @@ export default class ContextScrollPointerExtension extends Extension {
         this._cursorTracker = global.backend.get_cursor_tracker();
         this._seat = Clutter.get_default_backend().get_default_seat();
         this._indicatorActive = false;
+        this._cursorOffsetX = 0;
+        this._cursorOffsetY = 0;
+        this._visualX = this._x;
+        this._visualY = this._y;
         this._cursorHidden = false;
         this._focusInhibited = false;
         this._cursorRevealId = 0;
@@ -120,15 +128,29 @@ export default class ContextScrollPointerExtension extends Extension {
         this._setCursorActive(active);
     }
 
+    SetIndicatorOffset(x, y) {
+        this._cursorOffsetX = x;
+        this._cursorOffsetY = y;
+        if (this._indicatorActive)
+            this._moveCursorIcon();
+    }
+
     _setCursorActive(active) {
         if (!this._cursorIcon || !this._cursorTracker || !this._seat)
             return;
+        const wasActive = this._indicatorActive;
         this._indicatorActive = active;
         if (this._cursorRevealId) {
             GLib.source_remove(this._cursorRevealId);
             this._cursorRevealId = 0;
         }
         if (!active) {
+            if (wasActive && this._seat.warp_pointer)
+                this._seat.warp_pointer(this._visualX, this._visualY);
+            this._x = this._visualX;
+            this._y = this._visualY;
+            this._cursorOffsetX = 0;
+            this._cursorOffsetY = 0;
             this._cursorIcon.hide();
             if (this._focusInhibited) {
                 this._seat.uninhibit_unfocus();
@@ -140,6 +162,8 @@ export default class ContextScrollPointerExtension extends Extension {
             }
             return;
         }
+        this._cursorOffsetX = 0;
+        this._cursorOffsetY = 0;
         this._moveCursorIcon();
         this._cursorIcon.opacity = 255;
         this._cursorIcon.show();
@@ -168,7 +192,19 @@ export default class ContextScrollPointerExtension extends Extension {
     }
 
     _moveCursorIcon() {
-        this._cursorIcon?.set_position(this._x - 14, this._y - 14);
+        const halfSize = 14;
+        this._visualX = Math.max(
+            halfSize,
+            Math.min(global.stage.width - halfSize, this._x + this._cursorOffsetX)
+        );
+        this._visualY = Math.max(
+            halfSize,
+            Math.min(global.stage.height - halfSize, this._y + this._cursorOffsetY)
+        );
+        this._cursorIcon?.set_position(
+            this._visualX - halfSize,
+            this._visualY - halfSize
+        );
     }
 
     _windowAtPoint() {

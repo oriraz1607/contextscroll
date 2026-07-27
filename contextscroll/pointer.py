@@ -175,6 +175,21 @@ class GnomeShellPointer:
             # graphical login. Context recognition must continue meanwhile.
             return
 
+    def set_indicator_offset(self, x: int, y: int) -> None:
+        if self._proxy is None or self._glib is None:
+            return
+        try:
+            self._proxy.call_sync(
+                "SetIndicatorOffset",
+                self._glib.Variant("(ii)", (int(x), int(y))),
+                self._gio.DBusCallFlags.NONE,
+                1_000,
+                None,
+            )
+        except Exception:
+            # Preserve compatibility with a cached pre-upgrade extension.
+            return
+
     def close(self) -> None:
         self.set_indicator(False)
         proxy = getattr(self, "_proxy", None)

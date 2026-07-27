@@ -7,9 +7,12 @@ from contextscroll.protocol import (
     ActivityReport,
     ContextRegistry,
     ContextReport,
+    CursorReport,
     MAX_LINE_BYTES,
+    RefreshReport,
     decode,
     decode_activity,
+    decode_daemon,
     encode,
 )
 
@@ -48,6 +51,35 @@ class ProtocolTests(unittest.TestCase):
                 b'{"v":1,"type":"activity","active":"yes"}\n'
             )
 
+    def test_refresh_report_round_trip_from_daemon(self):
+        self.assertEqual(
+            decode_daemon(
+                b'{"v":1,"type":"refresh","request_id":17}\n'
+            ),
+            RefreshReport(17),
+        )
+
+    def test_cursor_report_round_trip_from_daemon(self):
+        self.assertEqual(
+            decode_daemon(b'{"v":1,"type":"cursor","x":-12,"y":34}\n'),
+            CursorReport(-12, 34),
+        )
+
+    def test_cursor_report_rejects_boolean_coordinates(self):
+        with self.assertRaises(ValueError):
+            decode_daemon(
+                b'{"v":1,"type":"cursor","x":true,"y":34}\n'
+            )
+
+    def test_context_report_carries_refresh_acknowledgement(self):
+        report = ContextReport(
+            Decision.SCROLL,
+            x=20,
+            y=30,
+            request_id=17,
+        )
+        self.assertEqual(decode(encode(report)), report)
+
     def test_latest_point_can_be_used_with_slots(self):
         point = LatestPoint()
         point.update(12, 34)
@@ -63,6 +95,15 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(
             point.wait(-1, 0),
             (12, 34, 1, (0, 0, 0, 0, 0, "")),
+        )
+
+    def test_explicit_refresh_generates_work_at_same_point(self):
+        point = LatestPoint()
+        point.update(12, 34)
+        point.refresh()
+        self.assertEqual(
+            point.wait(-1, 0),
+            (12, 34, 2, (0, 0, 0, 0, 0, "")),
         )
 
 
