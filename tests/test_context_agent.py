@@ -9,6 +9,7 @@ from contextscroll.context_agent import (
     AccessibilityTree,
     ContextWorker,
     LatestPoint,
+    MainThreadAccessibility,
 )
 from contextscroll.protocol import ContextReport
 
@@ -115,7 +116,10 @@ class ContextTreeTests(unittest.TestCase):
         )
 
     def test_window_title_fallback_handles_different_process_ids(self):
-        atspi = SimpleNamespace(StateType=SimpleNamespace(ACTIVE=1))
+        atspi = SimpleNamespace(
+            StateType=SimpleNamespace(ACTIVE=1),
+            CoordType=SimpleNamespace(SCREEN=1),
+        )
         tree = AccessibilityTree(atspi)
         desktop = object()
         application = FakeAccessible(process_id=99)
@@ -137,6 +141,100 @@ class ContextTreeTests(unittest.TestCase):
             (1920, 0, 1920, 1080, 1234, "Example — Mozilla Firefox"),
         )
         self.assertIs(result, firefox)
+
+    def test_unfocused_browser_matches_application_product_name(self):
+        atspi = SimpleNamespace(
+            StateType=SimpleNamespace(ACTIVE=1),
+            CoordType=SimpleNamespace(SCREEN=1),
+        )
+        tree = AccessibilityTree(atspi)
+        desktop = object()
+        application = FakeAccessible(
+            name="Brave Browser", process_id=99
+        )
+        focused_elsewhere = FakeAccessible(
+            name="Old page",
+            active=True,
+            extents=SimpleNamespace(
+                x=0, y=0, width=1280, height=720
+            ),
+        )
+        under_pointer = FakeAccessible(
+            name="Accessibility title not refreshed",
+            active=False,
+            extents=SimpleNamespace(
+                x=0, y=0, width=1920, height=1080
+            ),
+        )
+
+        def children(accessible, maximum=512):
+            del maximum
+            if accessible is desktop:
+                return iter([application])
+            if accessible is application:
+                return iter([focused_elsewhere, under_pointer])
+            return iter(())
+
+        tree._children = children
+        result = tree._top_level_for_window(
+            desktop,
+            (1920, 0, 1920, 1080, 1234, "New page — Brave"),
+        )
+
+        self.assertIs(result, under_pointer)
+
+    def test_generic_application_name_does_not_claim_a_window(self):
+        self.assertFalse(
+            AccessibilityTree._application_matches_window(
+                "Web Browser", "Example page"
+            )
+        )
+
+    def test_window_ranking_handles_unnamed_accessibility_windows(self):
+        atspi = SimpleNamespace(
+            StateType=SimpleNamespace(ACTIVE=1),
+            CoordType=SimpleNamespace(SCREEN=1),
+        )
+        tree = AccessibilityTree(atspi)
+        desktop = object()
+        browser_application = FakeAccessible(
+            name="Brave Browser", process_id=99
+        )
+        unnamed_application = FakeAccessible(process_id=1234)
+        browser = FakeAccessible(
+            name="Example — Brave",
+            extents=SimpleNamespace(
+                x=0, y=0, width=1920, height=1080
+            ),
+        )
+        unnamed = FakeAccessible(
+            name="",
+            extents=SimpleNamespace(
+                x=0, y=0, width=800, height=600
+            ),
+        )
+
+        def children(accessible, maximum=512):
+            del maximum
+            if accessible is desktop:
+                return iter(
+                    [browser_application, unnamed_application]
+                )
+            if accessible is browser_application:
+                return iter([browser])
+            if accessible is unnamed_application:
+                return iter([unnamed])
+            return iter(())
+
+        tree._children = children
+
+        self.assertIs(
+            tree._top_level_for_window(
+                desktop,
+                (1920, 0, 1920, 1080, 1234, "Example — Brave"),
+            ),
+            browser,
+        )
 
     def test_maps_compositor_point_into_atspi_window(self):
         atspi = SimpleNamespace(CoordType=SimpleNamespace(SCREEN=1))
@@ -275,6 +373,45 @@ class ContextTreeTests(unittest.TestCase):
 
 
 class ContextWorkerTests(unittest.TestCase):
+    def test_accessibility_lookup_runs_on_glib_thread(self):
+        class FakeTree:
+            def __init__(self):
+                self.thread = None
+
+            def report_at(self, x, y, window):
+                self.thread = threading.get_ident()
+                return ContextReport(Decision.SCROLL, x=x, y=y)
+
+        class FakeGlib:
+            PRIORITY_DEFAULT = 0
+            SOURCE_REMOVE = False
+
+            def __init__(self):
+                self.callback = None
+
+            def idle_add(self, callback, *, priority):
+                self.priority = priority
+                self.callback = callback
+                return 1
+
+        tree = FakeTree()
+        glib = FakeGlib()
+        proxy = MainThreadAccessibility(tree, glib, threading.Event())
+        reports = []
+        caller = threading.Thread(
+            target=lambda: reports.append(proxy.report_at(10, 20))
+        )
+        caller.start()
+        while glib.callback is None:
+            time.sleep(0.001)
+        main_thread = threading.get_ident()
+        glib.callback()
+        caller.join(timeout=1)
+
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(tree.thread, main_thread)
+        self.assertEqual(reports[0].decision, Decision.SCROLL)
+
     def test_receives_daemon_activity_transitions(self):
         class FakeConnection:
             def __init__(self):

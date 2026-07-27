@@ -8,9 +8,10 @@
 Wayland and X11.**
 
 ContextScroll adds system-wide middle mouse button scrolling while preserving
-normal middle-click actions. It recognizes what is under the pointer: clicking
-a page or document starts autoscroll, while clicking a link opens a new browser
-tab and clicking a tab closes it immediately.
+normal middle-click actions. It recognizes what is under the pointer: an item
+with a recognizable native middle-click purpose keeps that behavior, while a
+plain page or document surface starts autoscroll. Links still open in new tabs
+and browser tabs still close immediately.
 
 Highlights:
 
@@ -52,15 +53,22 @@ the decision immediately:
 
 | Context under pointer | Result |
 | --- | --- |
-| Tab, link, button, menu, slider, editable field | Native middle click |
+| Semantic native target: tab, link, button, menu, slider, editable field | Native middle click |
 | Web/text document, list, table, canvas, scroll pane | Autoscroll |
 | Unknown, stale, helper disconnected | Native middle click |
 
 Native targets take precedence over scrollable ancestors. For example, text
 inside a link remains native even though the enclosing web document scrolls.
+The same rule applies to clickable link cards, semantic controls, and
+application-specific AT-SPI actions outside browsers. Chromium exposes generic
+left-click and context-menu actions on much of a page; those do not prove that
+middle-click has a native meaning and therefore do not disable autoscroll.
+Broad actions exposed by a document root or window frame are ignored as well.
 
-The helper sends context before a click happens. It never performs AT-SPI,
-D-Bus, subprocess, image-recognition, or network work in the click handler.
+The helper sends context before a click happens. Its AT-SPI and desktop D-Bus
+work stays on the graphical session's GLib thread, while the Rust click path
+only reads a precomputed cache. It never performs AT-SPI, D-Bus, subprocess,
+image-recognition, or network work in the click handler.
 
 ## Desktop support
 

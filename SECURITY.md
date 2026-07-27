@@ -44,6 +44,10 @@ such as Firefox publish AT-SPI objects. It does not enable
 `ScreenReaderEnabled`; if it changed the general status, it restores it on a
 clean exit unless a screen reader has since been enabled.
 
+AT-SPI traversal and Shell-facing D-Bus calls are dispatched on the GLib main
+thread. The separate classifier worker schedules those ahead-of-click lookups
+but never calls libatspi or PyGObject concurrently.
+
 The helper sends only:
 
 - decision: `native`, `scroll`, or `unknown`;

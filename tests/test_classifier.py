@@ -76,7 +76,7 @@ class ClassifierTests(unittest.TestCase):
         ]
         self.assertEqual(classify_chain(chain), Decision.NATIVE)
 
-    def test_non_link_image_remains_scrollable(self):
+    def test_chromium_clickancestor_alone_is_not_actionable(self):
         chain = [
             self.node("image", actions=["clickancestor"]),
             self.node("document web"),
@@ -126,9 +126,12 @@ class ClassifierTests(unittest.TestCase):
             Decision.NATIVE,
         )
 
-    def test_chromium_generic_video_click_is_scroll(self):
+    def test_chromium_video_action_is_scroll(self):
         chain = [
-            self.node("video", actions=["click"]),
+            self.node(
+                "video",
+                actions=["clickancestor", "showcontextmenu"],
+            ),
             self.node("section", actions=["click"]),
             self.node("document web"),
         ]
@@ -137,7 +140,7 @@ class ClassifierTests(unittest.TestCase):
             Decision.SCROLL,
         )
 
-    def test_chromium_generic_landmark_click_is_scroll(self):
+    def test_chromium_landmark_action_is_scroll(self):
         chain = [
             self.node("landmark", actions=["click"]),
             self.node("panel"),
@@ -147,6 +150,85 @@ class ClassifierTests(unittest.TestCase):
             classify_chain(chain, "Google Chrome"),
             Decision.SCROLL,
         )
+
+    def test_unknown_concrete_action_name_is_native(self):
+        chain = [
+            self.node("section", actions=["application specific action"]),
+            self.node("document web"),
+        ]
+        self.assertEqual(classify_chain(chain), Decision.NATIVE)
+
+    def test_chromium_background_actions_do_not_disable_scroll(self):
+        chain = [
+            self.node(
+                "section",
+                actions=["clickancestor", "showcontextmenu"],
+            ),
+            self.node(
+                "section",
+                actions=["clickancestor", "showcontextmenu"],
+            ),
+            self.node(
+                "section",
+                actions=["clickancestor", "showcontextmenu"],
+            ),
+            self.node(
+                "section",
+                actions=["clickancestor", "showcontextmenu"],
+            ),
+            self.node(
+                "section",
+                actions=["clickancestor", "showcontextmenu"],
+            ),
+            self.node(
+                "landmark",
+                actions=["click", "showcontextmenu"],
+            ),
+            self.node(
+                "document web",
+                actions=["dodefault", "showcontextmenu"],
+            ),
+        ]
+        self.assertEqual(
+            classify_chain(chain, "Brave Browser"),
+            Decision.SCROLL,
+        )
+
+    def test_nearby_custom_desktop_click_target_is_native(self):
+        chain = [
+            self.node("text", actions=["clickancestor"]),
+            self.node("section", actions=["click", "showcontextmenu"]),
+            self.node("document web"),
+        ]
+        self.assertEqual(
+            classify_chain(chain, "Example Application"),
+            Decision.NATIVE,
+        )
+
+    def test_generic_browser_click_target_is_scroll(self):
+        chain = [
+            self.node("text", actions=["clickancestor"]),
+            self.node("section", actions=["click", "showcontextmenu"]),
+            self.node("document web"),
+        ]
+        self.assertEqual(
+            classify_chain(chain, "Brave Browser"),
+            Decision.SCROLL,
+        )
+
+    def test_document_root_action_does_not_override_scroll(self):
+        chain = [
+            self.node("paragraph"),
+            self.node("document web", actions=["activate"]),
+        ]
+        self.assertEqual(classify_chain(chain), Decision.SCROLL)
+
+    def test_list_item_is_native_inside_scrollable_list(self):
+        chain = [
+            self.node("list item"),
+            self.node("list"),
+        ]
+        self.assertEqual(classify_chain(chain), Decision.NATIVE)
 
     def test_generic_section_outside_browser_remains_unknown(self):
         chain = [self.node("section"), self.node("frame")]

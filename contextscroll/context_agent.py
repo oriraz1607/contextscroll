@@ -449,6 +449,52 @@ class AccessibilityTree:
         self.last_top_level = max(candidates, key=score)
         return self.last_top_level
 
+    @staticmethod
+    def _application_matches_window(
+        application_name: str, window_title: str
+    ) -> bool:
+        """Recognize an application's own windows without trusting its PID.
+
+        Chromium-family accessibility processes commonly have a different
+        PID from the compositor window, especially before that window has
+        received focus. Product-name tokens provide a conservative fallback
+        when the page title exposed by AT-SPI is also not current yet.
+        """
+        application = normalize(application_name)
+        title = normalize(window_title)
+        if not application or not title:
+            return False
+        ignored = {
+            "application",
+            "browser",
+            "desktop",
+            "gtk",
+            "qt",
+            "web",
+        }
+        return any(
+            len(token) >= 4
+            and token not in ignored
+            and token in title.split()
+            for token in application.split()
+        )
+
+    def _window_size_score(self, candidate, width: int, height: int):
+        try:
+            extents = candidate.get_component_iface().get_extents(
+                self.atspi.CoordType.SCREEN
+            )
+        except Exception:
+            return -1_000_000_000
+        if extents.width <= 0 or extents.height <= 0:
+            return -1_000_000_000
+        # Coordinates can be monitor-local in AT-SPI and global in Shell, but
+        # the dimensions still distinguish most same-application windows.
+        return -(
+            abs(extents.width - width)
+            + abs(extents.height - height)
+        )
+
     def _top_level_for_window(self, desktop, window):
         if window is None:
             return None
@@ -458,17 +504,25 @@ class AccessibilityTree:
         candidates = []
         for application in self._children(desktop, maximum=256):
             process_id = 0
+            application_name = ""
             try:
                 process_id = application.get_process_id()
             except Exception:
                 pass
+            try:
+                application_name = application.get_name() or ""
+            except Exception:
+                pass
+            application_match = self._application_matches_window(
+                application_name, title
+            )
             for candidate in self._children(application, maximum=256):
                 candidate_title = ""
                 try:
                     candidate_title = candidate.get_name() or ""
                 except Exception:
                     pass
-                title_match = (
+                title_match = bool(
                     title
                     and candidate_title
                     and (
@@ -477,12 +531,33 @@ class AccessibilityTree:
                     )
                 )
                 pid_match = pid > 0 and process_id == pid
-                if pid_match or title_match:
-                    candidates.append(candidate)
+                if pid_match or title_match or application_match:
+                    candidates.append(
+                        (
+                            candidate,
+                            title_match,
+                            pid_match,
+                            application_match,
+                            self._window_size_score(
+                                candidate, width, height
+                            ),
+                        )
+                    )
         if not candidates:
             return None
-        active = [candidate for candidate in candidates if self._active(candidate)]
-        self.last_top_level = (active or candidates)[0]
+        # Exact title and PID matches outrank the product-name fallback.
+        # Activity is deliberately last: an unfocused window under the pointer
+        # must beat a focused window elsewhere.
+        self.last_top_level = max(
+            candidates,
+            key=lambda item: (
+                item[1],
+                item[2],
+                item[3],
+                item[4],
+                self._active(item[0]),
+            ),
+        )[0]
         return self.last_top_level
 
     def _map_point(self, top_level, x: int, y: int, window):
@@ -636,6 +711,41 @@ class AccessibilityTree:
             x=x,
             y=y,
         )
+
+
+class MainThreadAccessibility:
+    """Run every libatspi traversal on the GLib main thread.
+
+    Some libatspi/PyGObject combinations corrupt their cached objects when
+    they are traversed concurrently with the GLib loop. The worker may wait
+    for this ahead-of-click lookup, but the Rust input path never waits.
+    """
+
+    def __init__(self, tree, glib, stop: threading.Event):
+        self.tree = tree
+        self.glib = glib
+        self.stop_event = stop
+
+    def report_at(self, x: int, y: int, window=None) -> ContextReport:
+        completed = threading.Event()
+        result = [ContextReport(Decision.UNKNOWN, x=x, y=y)]
+
+        def resolve():
+            try:
+                if not self.stop_event.is_set():
+                    result[0] = self.tree.report_at(x, y, window)
+            finally:
+                completed.set()
+            return self.glib.SOURCE_REMOVE
+
+        self.glib.idle_add(
+            resolve,
+            priority=self.glib.PRIORITY_DEFAULT,
+        )
+        while not completed.wait(STATE_POLL_SECONDS):
+            if self.stop_event.is_set():
+                return ContextReport(Decision.UNKNOWN, x=x, y=y)
+        return result[0]
 
 
 class ContextWorker(threading.Thread):
@@ -868,8 +978,8 @@ def main(argv=None) -> int:
         # Firefox responds dynamically to the IsEnabled property and needs a
         # brief moment to register its root object on the accessibility bus.
         time.sleep(0.25)
-    # Accessibility calls happen in a background worker. A short D-Bus timeout
-    # prevents a hung application from stalling future cache refreshes.
+    # A short D-Bus timeout prevents a hung application from stalling future
+    # cache refreshes. Traversal itself stays on this GLib thread.
     atspi.set_timeout(200, 1_000)
     atspi.init()
     tree = AccessibilityTree(atspi)
@@ -879,13 +989,17 @@ def main(argv=None) -> int:
             f"{report.decision.value}\t{report.role}\t"
             f"{report.application}\t{report.name}"
         )
-        atspi.exit()
         accessibility_status.close()
         return 0
 
     points = LatestPoint()
     stop = threading.Event()
-    worker = ContextWorker(tree, points, args.socket, stop)
+    worker = ContextWorker(
+        MainThreadAccessibility(tree, glib, stop),
+        points,
+        args.socket,
+        stop,
+    )
     worker.start()
     loop = glib.MainLoop()
     session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
@@ -899,13 +1013,26 @@ def main(argv=None) -> int:
         except PointerUnavailable as error:
             stop.set()
             worker.join(timeout=2.0)
-            atspi.exit()
             accessibility_status.close()
             raise RuntimeError(
                 "the ContextScroll GNOME extension is required on Wayland"
             ) from error
         pointer.connect(points.update)
-        worker.set_active_callback(pointer.set_indicator)
+
+        def update_indicator(active):
+            def apply_indicator():
+                if pointer is not None:
+                    pointer.set_indicator(active)
+                return glib.SOURCE_REMOVE
+
+            glib.idle_add(
+                apply_indicator,
+                priority=glib.PRIORITY_HIGH,
+            )
+
+        # The Shell-facing GDBusProxy remains on the GLib thread. The socket
+        # worker publishes only the desired boolean state.
+        worker.set_active_callback(update_indicator)
         points.update(*pointer.position())
         coordinate_source = "GNOME Shell coordinates"
     else:
@@ -914,7 +1041,6 @@ def main(argv=None) -> int:
         except PointerUnavailable as error:
             stop.set()
             worker.join(timeout=2.0)
-            atspi.exit()
             accessibility_status.close()
             raise RuntimeError(
                 "a pointer source is required: " + str(error)
@@ -955,7 +1081,8 @@ def main(argv=None) -> int:
         worker.join(timeout=2.0)
         if pointer is not None:
             pointer.close()
-        atspi.exit()
+        # Process teardown releases libatspi. Explicit atspi.exit() has caused
+        # shutdown-time crashes in current libatspi/Python combinations.
         accessibility_status.close()
     return 0
 

@@ -72,6 +72,7 @@ NATIVE_ROLES = {
     "menu",
     "menu bar",
     "menu item",
+    "list item",
     "page tab",
     "page tab list",
     "password text",
@@ -84,6 +85,7 @@ NATIVE_ROLES = {
     "slider",
     "spin button",
     "switch",
+    "table cell",
     "tearoff menu item",
     "toggle button",
     "tool bar",
@@ -208,16 +210,6 @@ FILE_MANAGER_CONTENT_ROLES = {
     "viewport",
 }
 
-ACTIVATION_ACTIONS = {
-    "activate",
-    "click",
-    "close",
-    "jump",
-    "open",
-    "press",
-    "select",
-}
-
 ACTION_CONTAINER_ROLES = {
     "application",
     "document frame",
@@ -227,13 +219,20 @@ ACTION_CONTAINER_ROLES = {
     "document web",
     "frame",
     "internal frame",
-    "landmark",
-    "panel",
+    "page",
     "scroll pane",
-    "section",
-    "video",
     "window",
 }
+
+PASSIVE_ACTIONS = {
+    # Chromium exposes these on almost every web object, including empty
+    # background divs. Neither proves that the object itself performs the
+    # page action a middle click should preserve.
+    "clickancestor",
+    "showcontextmenu",
+}
+
+MAX_DIRECT_ACTION_ANCESTORS = 4
 
 
 def is_explicit_native_target(node: SemanticNode) -> bool:
@@ -246,16 +245,43 @@ def is_explicit_native_target(node: SemanticNode) -> bool:
     xml_roles = set(node.attributes.get("xml roles", "").split())
     if {"button", "link", "tab"} & xml_roles:
         return True
-    # Toolkits commonly expose activate/focus actions on window frames and
-    # other containers. Those actions do not make the content at the pointer
-    # an interactive target.
+    return False
+
+
+def has_direct_action(node: SemanticNode) -> bool:
+    # Toolkits commonly expose actions on document roots, window frames and
+    # scroll containers. Those broad structural actions do not mean the item
+    # directly beneath the pointer is interactive.
     if node.role in ACTION_CONTAINER_ROLES:
         return False
-    return bool(node.actions & ACTIVATION_ACTIONS)
+    # AT-SPI actions are the closest cross-toolkit answer to "would clicking
+    # this item do something?". Preserve native middle click for concrete
+    # nearby actions, including custom controls and application-specific
+    # actions whose names are not known in advance.
+    return bool(node.actions - PASSIVE_ACTIONS)
 
 
-def is_native_target(node: SemanticNode) -> bool:
-    return "editable" in node.states or is_explicit_native_target(node)
+def chain_has_native_target(
+    chain: tuple[SemanticNode, ...],
+    *,
+    include_editable: bool,
+    include_actions: bool,
+) -> bool:
+    if any(
+        is_explicit_native_target(node)
+        or (include_editable and "editable" in node.states)
+        for node in chain
+    ):
+        return True
+    if not include_actions:
+        return False
+    # A child such as text may sit inside the actionable object. Limit action
+    # inference to the nearest few ancestors so a page-level click handler
+    # does not turn every blank area into a native middle click.
+    return any(
+        has_direct_action(node)
+        for node in chain[:MAX_DIRECT_ACTION_ANCESTORS]
+    )
 
 
 def is_browser_application(application: str) -> bool:
@@ -295,19 +321,31 @@ def classify_chain(
     """
 
     chain = tuple(nodes)
+    browser = is_browser_application(application)
     if is_libreoffice_writer(chain, application):
         # Writer exposes its document body as editable text. A blanket
         # editable rule would preserve primary-selection paste and prevent
         # autoscroll everywhere in the page. Ignore editable only within the
         # Writer document ancestry; real controls and links remain native.
-        if any(is_explicit_native_target(node) for node in chain):
+        if chain_has_native_target(
+            chain,
+            include_editable=False,
+            include_actions=True,
+        ):
             return Decision.NATIVE
         return Decision.SCROLL
-    if any(is_native_target(node) for node in chain):
+    if chain_has_native_target(
+        chain,
+        include_editable=True,
+        # Chromium's action interface describes left-click and context-menu
+        # behavior but not whether middle-click has a native meaning. Generic
+        # browser actions therefore cannot safely override autoscroll.
+        include_actions=not browser,
+    ):
         return Decision.NATIVE
     if any(node.role in SCROLL_ROLES for node in chain):
         return Decision.SCROLL
-    if is_browser_application(application) and any(
+    if browser and any(
         node.role in BROWSER_CONTENT_ROLES for node in chain
     ):
         return Decision.SCROLL
