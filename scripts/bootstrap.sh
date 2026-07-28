@@ -3,7 +3,7 @@ set -euo pipefail
 
 repository=oriraz1607/contextscroll
 repository_url="https://github.com/$repository.git"
-release=v0.4.0
+release=v0.4.1
 
 if [[ ${EUID} -eq 0 ]]; then
     echo "Run this bootstrap as your desktop user, not as root." >&2

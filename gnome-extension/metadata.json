@@ -4,5 +4,5 @@
   "description": "Provides Wayland pointer context and the active autoscroll cursor for ContextScroll.",
   "settings-schema": "org.contextscroll",
   "shell-version": ["48", "49", "50"],
-  "version": 11
+  "version": 12
 }

@@ -67,6 +67,7 @@ export default class ContextScrollPointerExtension extends Extension {
         this._visualY = this._y;
         this._cursorHidden = false;
         this._focusInhibited = false;
+        this._unredirectInhibited = false;
         this._cursorRevealId = 0;
         this._neutralCursor = Gio.Icon.new_for_string(
             `${this.path}/autoscroll-cursor.svg`
@@ -134,6 +135,7 @@ export default class ContextScrollPointerExtension extends Extension {
 
     disable() {
         this._setCursorActive(false);
+        this._releaseCompositing();
         if (this._cursorRevealId) {
             GLib.source_remove(this._cursorRevealId);
             this._cursorRevealId = 0;
@@ -258,13 +260,19 @@ export default class ContextScrollPointerExtension extends Extension {
                 this._cursorTracker.uninhibit_cursor_visibility();
                 this._cursorHidden = false;
             }
+            this._releaseCompositing();
             return;
         }
+        this._holdCompositing();
         this._cursorOffsetX = 0;
         this._cursorOffsetY = 0;
         this._cursorDirection = 0;
         this._updateCursorDirection();
         this._moveCursorIcon();
+        Main.layoutManager.uiGroup.set_child_above_sibling(
+            this._cursorIcon,
+            null
+        );
         this._cursorIcon.opacity = 255;
         this._cursorIcon.show();
         if (!this._focusInhibited) {
@@ -291,15 +299,48 @@ export default class ContextScrollPointerExtension extends Extension {
         );
     }
 
+    _holdCompositing() {
+        if (this._unredirectInhibited)
+            return;
+        // Fullscreen windows may use direct scanout and bypass Shell's
+        // overlay actors. Keep the compositor active only while the
+        // replacement cursor is visible.
+        global.compositor.disable_unredirect();
+        this._unredirectInhibited = true;
+    }
+
+    _releaseCompositing() {
+        if (!this._unredirectInhibited)
+            return;
+        global.compositor.enable_unredirect();
+        this._unredirectInhibited = false;
+    }
+
     _moveCursorIcon() {
         const halfSize = CURSOR_SIZE / 2;
+        const monitor = Main.layoutManager.findMonitorForPoint(
+            this._x,
+            this._y
+        );
+        const bounds = monitor ?? {
+            x: 0,
+            y: 0,
+            width: global.stage.width,
+            height: global.stage.height,
+        };
         this._visualX = Math.max(
-            halfSize,
-            Math.min(global.stage.width - halfSize, this._x + this._cursorOffsetX)
+            bounds.x + halfSize,
+            Math.min(
+                bounds.x + bounds.width - halfSize,
+                this._x + this._cursorOffsetX
+            )
         );
         this._visualY = Math.max(
-            halfSize,
-            Math.min(global.stage.height - halfSize, this._y + this._cursorOffsetY)
+            bounds.y + halfSize,
+            Math.min(
+                bounds.y + bounds.height - halfSize,
+                this._y + this._cursorOffsetY
+            )
         );
         this._cursorIcon?.set_position(
             this._visualX - halfSize,
