@@ -39,32 +39,26 @@ pub enum Route {
     Stop,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum AxisLock {
-    #[default]
-    None,
-    Horizontal,
-    Vertical,
-}
-
 #[derive(Debug, Default)]
 pub struct Interaction {
     pub scrolling: bool,
     native_middle_down: bool,
     starting_release_pending: bool,
     consumed_release: Option<u16>,
-    axis_lock: AxisLock,
     pub dx: f64,
     pub dy: f64,
+    pub visual_dx: f64,
+    pub visual_dy: f64,
 }
 
 impl Interaction {
     pub fn stop(&mut self) {
         self.scrolling = false;
         self.starting_release_pending = false;
-        self.axis_lock = AxisLock::None;
         self.dx = 0.0;
         self.dy = 0.0;
+        self.visual_dx = 0.0;
+        self.visual_dy = 0.0;
     }
 
     pub fn button(
@@ -111,9 +105,10 @@ impl Interaction {
             }
             self.native_middle_down = false;
             self.scrolling = true;
-            self.axis_lock = AxisLock::None;
             self.dx = 0.0;
             self.dy = 0.0;
+            self.visual_dx = 0.0;
+            self.visual_dy = 0.0;
             if mode == Mode::Toggle {
                 self.starting_release_pending = true;
             }
@@ -141,18 +136,10 @@ impl Interaction {
         if !self.scrolling {
             return true;
         }
-        match self.axis_lock {
-            AxisLock::Horizontal => {
-                self.dx = (self.dx + x).clamp(-maximum, maximum);
-            }
-            AxisLock::Vertical => {
-                self.dy = (self.dy + y).clamp(-maximum, maximum);
-            }
-            AxisLock::None => {
-                self.dx = (self.dx + x).clamp(-maximum, maximum);
-                self.dy = (self.dy + y).clamp(-maximum, maximum);
-            }
-        }
+        self.visual_dx = (self.visual_dx + x).clamp(-maximum, maximum);
+        self.visual_dy = (self.visual_dy + y).clamp(-maximum, maximum);
+        self.dx = self.visual_dx;
+        self.dy = self.visual_dy;
         // Keep the compositor pointer at the activation point. Forwarding
         // toggle-mode motion allowed it to enter Chromium's tab strip, where
         // the generated wheel events could switch tabs instead of scrolling
@@ -161,14 +148,16 @@ impl Interaction {
     }
 
     pub fn finish_motion_batch(&mut self, deadzone: f64) {
-        if !self.scrolling || self.axis_lock != AxisLock::None {
+        if !self.scrolling {
             return;
         }
-        if self.dy.abs() > deadzone && self.dy.abs() >= self.dx.abs() * 1.5 {
-            self.axis_lock = AxisLock::Vertical;
+        self.dx = self.visual_dx;
+        self.dy = self.visual_dy;
+        if self.visual_dy.abs() > deadzone && self.visual_dy.abs() >= self.visual_dx.abs() * 1.5 {
             self.dx = 0.0;
-        } else if self.dx.abs() > deadzone && self.dx.abs() >= self.dy.abs() * 1.5 {
-            self.axis_lock = AxisLock::Horizontal;
+        } else if self.visual_dx.abs() > deadzone
+            && self.visual_dx.abs() >= self.visual_dy.abs() * 1.5
+        {
             self.dy = 0.0;
         }
     }
@@ -319,6 +308,8 @@ mod tests {
         assert!(!state.motion(3.0, -8.0, Mode::Toggle, 1_200.0,));
         assert_eq!(state.dx, 3.0);
         assert_eq!(state.dy, -8.0);
+        assert_eq!(state.visual_dx, 3.0);
+        assert_eq!(state.visual_dy, -8.0);
     }
 
     #[test]
@@ -329,10 +320,12 @@ mod tests {
         state.motion(4.0, -30.0, Mode::Toggle, 1_200.0);
         state.finish_motion_batch(15.0);
         state.motion(-20.0, -40.0, Mode::Toggle, 1_200.0);
+        state.finish_motion_batch(15.0);
 
         assert_eq!(state.dx, 0.0);
         assert_eq!(state.dy, -70.0);
-        assert_eq!(state.axis_lock, AxisLock::Vertical);
+        assert_eq!(state.visual_dx, -16.0);
+        assert_eq!(state.visual_dy, -70.0);
     }
 
     #[test]
@@ -345,7 +338,26 @@ mod tests {
 
         assert_eq!(state.dx, 30.0);
         assert_eq!(state.dy, -30.0);
-        assert_eq!(state.axis_lock, AxisLock::None);
+        assert_eq!(state.visual_dx, 30.0);
+        assert_eq!(state.visual_dy, -30.0);
+    }
+
+    #[test]
+    fn dominant_axis_filter_yields_to_a_direction_change() {
+        let mut state = Interaction::default();
+        state.button(MIDDLE, 1, MIDDLE, Decision::Scroll, Mode::Toggle);
+
+        state.motion(2.0, -60.0, Mode::Toggle, 1_200.0);
+        state.finish_motion_batch(15.0);
+        assert_eq!(state.dx, 0.0);
+        assert_eq!(state.dy, -60.0);
+
+        state.motion(50.0, 40.0, Mode::Toggle, 1_200.0);
+        state.finish_motion_batch(15.0);
+        assert_eq!(state.dx, 52.0);
+        assert_eq!(state.dy, 0.0);
+        assert_eq!(state.visual_dx, 52.0);
+        assert_eq!(state.visual_dy, -20.0);
     }
 
     #[test]

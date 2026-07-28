@@ -433,7 +433,10 @@ fn run_mouse(
                         if code == SynchronizationCode::SYN_REPORT.0 {
                             interaction.finish_motion_batch(settings.deadzone_px);
                             if interaction.scrolling {
-                                signals.set_cursor_offset(interaction.dx, interaction.dy);
+                                signals.set_cursor_offset(
+                                    interaction.visual_dx,
+                                    interaction.visual_dy,
+                                );
                             }
                             if !batch.is_empty() {
                                 output.emit(&batch)?;

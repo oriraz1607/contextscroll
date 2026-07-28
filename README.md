@@ -141,10 +141,10 @@ First stop any other daemon that exclusively grabs the same mouse.
 For a one-command install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oriraz1607/contextscroll/v0.3.1/scripts/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oriraz1607/contextscroll/v0.3.2/scripts/bootstrap.sh | bash
 ```
 
-The bootstrap creates a temporary shallow checkout of the immutable `v0.3.1`
+The bootstrap creates a temporary shallow checkout of the immutable `v0.3.2`
 release, runs the normal installer, and removes the checkout afterward.
 
 To install from an existing checkout instead:
@@ -194,9 +194,10 @@ The default interaction is toggle mode:
    cursor follows you while wheel events remain on the original content.
 4. Click any mouse button to stop. The stopping click is consumed.
 
-Clearly vertical or horizontal gestures lock to their dominant axis, preventing
-small sideways jitter from becoming browser navigation. Deliberate diagonal
-movement keeps both axes available.
+Clearly vertical or horizontal gestures temporarily suppress cross-axis wheel
+jitter, preventing small sideways movement from becoming browser navigation.
+The visible cursor always follows both axes, and deliberate diagonal movement
+or a change of direction immediately makes the other scroll axis available.
 
 Point at a browser tab, link, button, menu, or editable field and middle-click
 normally. With fresh context, both the press and release are forwarded
