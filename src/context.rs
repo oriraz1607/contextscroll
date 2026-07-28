@@ -161,6 +161,19 @@ impl ContextCache {
         self.updated_millis.store(0, Ordering::Release);
     }
 
+    pub fn clear(&self) {
+        let _guard = self
+            .wait_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.decision
+            .store(Decision::Unknown as u8, Ordering::Relaxed);
+        self.updated_millis.store(0, Ordering::Release);
+        self.updated_generation.store(0, Ordering::Relaxed);
+        self.acknowledged_request.store(0, Ordering::Release);
+        self.wait_condition.notify_all();
+    }
+
     pub fn require_generation(&self, generation: u64) {
         let _guard = self
             .wait_lock
@@ -279,6 +292,20 @@ mod tests {
             generation: 0,
         });
         assert_eq!(cache.current(Decision::Native), Decision::Scroll);
+    }
+
+    #[test]
+    fn clearing_context_fails_safe() {
+        let cache = ContextCache::new();
+        cache.update(ContextUpdate {
+            decision: Decision::Scroll,
+            request_id: 7,
+            generation: 0,
+        });
+        assert_eq!(cache.current(Decision::Native), Decision::Scroll);
+        cache.clear();
+        assert_eq!(cache.current(Decision::Native), Decision::Native);
+        assert!(cache.needs_refresh());
     }
 
     #[test]

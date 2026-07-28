@@ -1,0 +1,5 @@
+exclude:
+  - ./target/**
+  - ./target-repro/**
+  - ./dist/**
+  - ./.git/**

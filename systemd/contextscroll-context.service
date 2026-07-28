@@ -16,11 +16,20 @@ NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=strict
-# libatspi reads per-session bus metadata from the user's home. Keep that
-# visible but immutable.
-ProtectHome=read-only
-# Gio.Settings uses dconf's per-session shared-memory file for live,
-# persistent Quick Settings and context-rule updates.
+# Hide application data. Expose only the small set of per-user files needed
+# by dconf, legacy AT-SPI discovery, and X11 authentication.
+ProtectHome=tmpfs
+BindReadOnlyPaths=-%h/.config/dconf/user
+BindReadOnlyPaths=-%h/.cache/at-spi
+BindReadOnlyPaths=-%h/.Xauthority
+# ProtectHome also hides /run/user. Fedora gives accessibility-enabled
+# processes randomized AT-SPI socket directories there, so the helper needs
+# the session runtime directory to remain visible. Keep it read-only except
+# for dconf's shared-memory directory.
+BindReadOnlyPaths=%t
+RuntimeDirectory=dconf
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 ReadWritePaths=%t/dconf
 PrivateTmp=yes
 PrivateNetwork=yes
@@ -28,7 +37,7 @@ IPAddressDeny=any
 RestrictAddressFamilies=AF_UNIX
 # PrivateTmp hides the filesystem X socket while PrivateNetwork hides its
 # abstract-socket twin. Expose only the X11/XWayland socket directory.
-BindReadOnlyPaths=/tmp/.X11-unix
+BindReadOnlyPaths=-/tmp/.X11-unix
 ProtectKernelTunables=yes
 ProtectKernelLogs=yes
 ProtectKernelModules=yes
@@ -38,9 +47,12 @@ ProtectHostname=yes
 RestrictNamespaces=yes
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
+RemoveIPC=yes
+KeyringMode=private
 LockPersonality=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
 SystemCallErrorNumber=EPERM
 MemoryDenyWriteExecute=yes
 MemoryMax=192M

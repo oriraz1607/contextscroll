@@ -1,7 +1,9 @@
-# Grant the dedicated daemon account access only to physical mouse-class
-# event nodes. Do not grant it access to keyboards, other input classes, or
-# ContextScroll's own uinput mirrors.
-ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", ATTRS{name}!="ContextScroll virtual: *", RUN+="/usr/bin/setfacl -m g:contextscroll:rw /dev/input/%k"
+# Grant the dedicated daemon account access only to physical mouse-class event
+# nodes. Some real mice (including Logitech HID++ devices) also advertise
+# keyboard capabilities; the daemon splits those keys into a transparent,
+# separate virtual passthrough. Pure keyboards and ContextScroll's own mirrors
+# do not match this rule.
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", ATTRS{name}!="ContextScroll virtual: *", RUN+="/usr/bin/setfacl -m u:contextscroll:rw /dev/input/%k"
 
 # Creating a virtual mouse requires write access to uinput, but not root.
-ACTION=="add|change", SUBSYSTEM=="misc", KERNEL=="uinput", RUN+="/usr/bin/setfacl -m g:contextscroll:rw /dev/%k"
+ACTION=="add|change", SUBSYSTEM=="misc", KERNEL=="uinput", RUN+="/usr/bin/setfacl -m u:contextscroll:rw /dev/%k"

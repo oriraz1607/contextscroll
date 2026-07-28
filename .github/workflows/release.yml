@@ -1,0 +1,157 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - name: Validate tag and commit
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n1)
+          test "$RELEASE_TAG" = "v$version"
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: Install Rust 1.85
+        run: rustup toolchain install 1.85.0 --profile minimal --component clippy --component rustfmt
+      - run: rustup default 1.85.0
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Check dependency policy
+        run: |
+          rustup default stable
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo deny check advisories licenses bans sources
+          rustup default 1.85.0
+      - run: shellcheck scripts/*.sh
+      - run: ./scripts/test.sh
+
+  build:
+    needs: validate
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            architecture: x86_64
+          - target: aarch64-unknown-linux-musl
+            architecture: aarch64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Install exact Rust and cross
+        run: |
+          rustup toolchain install 1.85.0 --profile minimal
+          rustup default 1.85.0
+          cargo install cross --version 0.2.5 --locked
+      - name: Build twice and compare
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          cross build --release --locked --target "$TARGET"
+          first=$(sha256sum "target/$TARGET/release/contextscroll" | cut -d' ' -f1)
+          CARGO_TARGET_DIR=target-repro cross build --release --locked --target "$TARGET"
+          second=$(sha256sum "target-repro/$TARGET/release/contextscroll" | cut -d' ' -f1)
+          test "$first" = "$second"
+          description=$(file "target/$TARGET/release/contextscroll")
+          case "$TARGET" in
+            x86_64-*) grep -q 'x86-64' <<<"$description" ;;
+            aarch64-*) grep -Eq 'ARM aarch64|aarch64' <<<"$description" ;;
+          esac
+          grep -Eq 'statically linked|static-pie linked' <<<"$description"
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@f8bdd1d8ac5e901a77a92f111440fdb1b593736b # v0.20.6
+        with:
+          path: .
+          format: spdx-json
+          output-file: SBOM.spdx.json
+          upload-artifact: false
+      - name: Build deterministic bundle
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          export SOURCE_DATE_EPOCH
+          ./scripts/build-bundle.sh \
+            --target "$TARGET" \
+            --binary "target/$TARGET/release/contextscroll" \
+            --sbom SBOM.spdx.json
+      - name: Verify bundle contents
+        run: |
+          set -euo pipefail
+          archive=$(find dist -name '*.tar.gz' -print -quit)
+          extract=$(mktemp -d)
+          tar -xzf "$archive" -C "$extract"
+          root=$(find "$extract" -mindepth 1 -maxdepth 1 -type d -print -quit)
+          cd "$root"
+          sha256sum --strict --check BUNDLE-MANIFEST.sha256
+          test -x prebuilt/contextscroll
+          test -f SBOM.spdx.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: bundle-${{ matrix.architecture }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: bundle-*
+          path: dist
+          merge-multiple: true
+      - name: Create checksums
+        run: |
+          archive=$(find dist -name '*linux-x86_64.tar.gz' -print -quit)
+          root=$(tar -tzf "$archive" | sed -n '1s|/.*||p')
+          tar -xOf "$archive" "$root/SBOM.spdx.json" > dist/SBOM.spdx.json
+          cd dist
+          sha256sum *.tar.gz SBOM.spdx.json | LC_ALL=C sort > SHA256SUMS
+      - name: Attest release bundles
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+      - name: Attest included SBOM
+        uses: actions/attest-sbom@51e74621a501c89df81fc1391c5a8f4cfc9fab2f # v3
+        with:
+          subject-path: dist/*.tar.gz
+          sbom-path: dist/SBOM.spdx.json
+      - name: Create immutable-ready release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            --draft \
+            --verify-tag \
+            --generate-notes \
+            --title "ContextScroll $RELEASE_TAG"
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false

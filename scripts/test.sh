@@ -24,9 +24,26 @@ fi
 for script in scripts/*.sh; do
     bash -n "$script"
 done
+./scripts/test-bundle.sh
 
 grep -qx 'User=contextscroll' systemd/contextscroll.service
 grep -qx 'Group=contextscroll' systemd/contextscroll.service
 grep -Fq 'ENV{ID_INPUT_MOUSE}=="1"' udev/99-contextscroll.rules
+grep -Fq 'setfacl -m u:contextscroll:rw' udev/99-contextscroll.rules
 grep -Fq 'ATTRS{name}!="ContextScroll virtual: *"' \
     udev/99-contextscroll.rules
+grep -qx 'DevicePolicy=closed' systemd/contextscroll.service
+grep -qx 'ProtectHome=tmpfs' systemd/contextscroll-context.service
+
+SYSTEMD_LOG_LEVEL=warning systemd-analyze verify \
+    systemd/contextscroll.service \
+    systemd/contextscroll-context.service \
+    > "$schema_test_dir/systemd.log" 2>&1 || true
+grep -Ev \
+    'Failed to (turn off SO_PASSRIGHTS|enable SO_PASSCRED).*Operation not permitted' \
+    "$schema_test_dir/systemd.log" \
+    > "$schema_test_dir/systemd.filtered" || true
+test ! -s "$schema_test_dir/systemd.filtered" || {
+    cat "$schema_test_dir/systemd.filtered" >&2
+    exit 1
+}

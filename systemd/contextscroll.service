@@ -19,7 +19,10 @@ Nice=-5
 
 # A udev rule grants this unprivileged account access only to physical
 # mouse-class event nodes and /dev/uinput. DevicePolicy/PrivateDevices are
-# intentionally absent because mice may be hot-plugged after startup.
+# additionally limit the service to the input device class and uinput.
+DevicePolicy=closed
+DeviceAllow=char-input rw
+DeviceAllow=/dev/uinput rw
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
@@ -39,9 +42,13 @@ ProtectClock=yes
 ProtectHostname=yes
 RestrictNamespaces=yes
 RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RemoveIPC=yes
+KeyringMode=private
 LockPersonality=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
 SystemCallErrorNumber=EPERM
 MemoryDenyWriteExecute=yes
 MemoryMax=64M

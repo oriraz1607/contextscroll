@@ -126,6 +126,9 @@ Build:
 - Cargo;
 - internet access for the first Cargo build, or a populated Cargo cache.
 
+Verified release installation also requires a recent GitHub CLI with
+`gh attestation verify` support.
+
 Fedora:
 
 ```bash
@@ -142,24 +145,40 @@ sudo apt install acl cargo rustc python3-gi gir1.2-atspi-2.0 at-spi2-core libx11
 
 First stop any other daemon that exclusively grabs the same mouse.
 
-For a one-command install:
+Download the bundle for your architecture from the release page. The supported
+installation path verifies its GitHub/Sigstore provenance before any downloaded
+code is executed:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oriraz1607/contextscroll/v0.4.1/scripts/bootstrap.sh | bash
-```
-
-The bootstrap creates a temporary shallow checkout of the immutable `v0.4.1`
-release, runs the normal installer, and removes the checkout afterward.
-
-To install from an existing checkout instead:
-
-```bash
+VERSION=v0.5.0
+ARCH=$(uname -m)
+gh release download "$VERSION" \
+  --repo oriraz1607/contextscroll \
+  --pattern "contextscroll-${VERSION}-linux-${ARCH}.tar.gz"
+gh attestation verify \
+  "contextscroll-${VERSION}-linux-${ARCH}.tar.gz" \
+  --repo oriraz1607/contextscroll
+tar -xzf "contextscroll-${VERSION}-linux-${ARCH}.tar.gz"
+cd "contextscroll-${VERSION}-linux-${ARCH}"
 ./scripts/install.sh
 ```
 
-The script builds a locked release binary before elevating, installs both
-services and the GNOME pointer bridge, preserves an existing
-`/etc/contextscroll.conf`, and starts the system and current-user services.
+`x86_64` and `aarch64` bundles are supported. Verification establishes which
+repository commit and workflow produced the archive; it is not a substitute
+for reviewing this security-sensitive project.
+
+To build from an existing checkout instead, use the explicitly advanced source
+path:
+
+```bash
+./scripts/install.sh --from-source
+```
+
+The installer verifies the bundle manifest, creates a private root-owned
+snapshot, verifies it again, and installs from that snapshot. The privileged
+phase never runs Cargo or reads executable content from the original
+user-writable directory. It preserves an existing regular
+`/etc/contextscroll.conf` and refuses a symlinked configuration.
 
 GNOME discovers a newly installed local extension at graphical-session
 startup. Sign out and back in after the first installation, and after an
@@ -322,10 +341,12 @@ other mouse service.
 ## Architecture and safety
 
 - The Rust daemon runs as the dedicated, non-login `contextscroll` system
-  account. A udev rule grants that account access only to physical
-  mouse-class event nodes and `/dev/uinput`.
-- It accepts context only from a Unix-socket peer whose UID logind reports as
-  an active or online desktop user.
+  account. A udev rule grants that UID access to physical mouse-class event
+  nodes and `/dev/uinput`; pure keyboard nodes do not match.
+- It accepts context only from the sole active, local graphical session after
+  matching the socket peer's UID to logind. The peer PID is retained for
+  audit logging. Ambiguous
+  multi-seat and remote sessions fail closed into transparent pass-through.
 - Protocol v2 lines are capped at 2048 bytes before JSON parsing. Pause control
   is a boolean, and cursor direction is bounded to neutral, up, or down.
 - Context expires after 750 ms. The helper sends a 200 ms heartbeat, so a
@@ -336,9 +357,12 @@ other mouse service.
   threads. Inactive mice wake only for input or a bounded shutdown check.
 - Wayland coordinates are capped at 60 Hz, duplicate points are coalesced,
   and accessibility queries are capped at 30 Hz.
-- Each virtual mouse copies the physical device's vendor/product identity and
-  capabilities. Its name is prefixed with `ContextScroll virtual:` so the
-  daemon can reliably ignore its own output device.
+- Each virtual mouse copies the physical device's vendor/product identity,
+  mouse buttons, and relative axes, but never keyboard key capabilities. Its
+  name is prefixed with `ContextScroll virtual:` so the daemon can reliably
+  ignore its own output device. Hybrid mice that advertise keyboard keys use
+  a separate exact-capability virtual passthrough so those keys are not
+  swallowed by the exclusive grab.
 - Both systemd units run unprivileged, drop all capabilities, and apply
   syscall, filesystem, namespace, network, memory, and task limits.
 

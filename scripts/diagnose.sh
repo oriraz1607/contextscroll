@@ -14,6 +14,13 @@ check() {
     fi
 }
 
+# Invoked indirectly by check.
+# shellcheck disable=SC2329
+physical_mouse_acquired() {
+    journalctl -u contextscroll.service "_PID=$daemon_pid" --no-pager \
+        2>/dev/null | grep -Fq 'INFO: grabbed '
+}
+
 check "Rust daemon installed" command -v contextscroll
 check "Python helper installed" command -v contextscroll-context
 check "settings schema available" gsettings list-keys org.contextscroll
@@ -33,9 +40,13 @@ check "system daemon active" systemctl is-active --quiet contextscroll.service
 daemon_user=$(systemctl show contextscroll.service --property=User --value \
     2>/dev/null)
 check "system daemon unprivileged" test "$daemon_user" = contextscroll
+daemon_pid=$(systemctl show contextscroll.service --property=MainPID --value \
+    2>/dev/null)
+check "physical mouse acquired" physical_mouse_acquired
 check "session helper active" systemctl --user is-active --quiet \
     contextscroll-context.service
 check "context socket present" test -S /run/contextscroll/context.sock
+check "current session authorized" contextscroll --check-session
 check "accessibility bus reachable" gdbus call --session \
     --dest org.a11y.Bus --object-path /org/a11y/bus \
     --method org.a11y.Bus.GetAddress

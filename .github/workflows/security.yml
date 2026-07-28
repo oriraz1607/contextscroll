@@ -1,0 +1,65 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Install current cargo-deny
+        run: |
+          rustup default stable
+          cargo install cargo-deny --version 0.20.2 --locked
+      - run: cargo deny check advisories licenses bans sources
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-1.0, AGPL-3.0
+
+  static-analysis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      matrix:
+        language: [javascript-typescript, python]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: github/codeql-action/init@adfda868f108ac4222129de456ea554034a27db7 # v4
+        with:
+          languages: ${{ matrix.language }}
+      - uses: github/codeql-action/analyze@adfda868f108ac4222129de456ea554034a27db7 # v4
+
+  workflow-and-shell:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: ShellCheck
+        run: shellcheck scripts/*.sh
+      - name: actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+        run: |
+          go install "github.com/rhysd/actionlint/cmd/actionlint@v${ACTIONLINT_VERSION}"
+          actionlint

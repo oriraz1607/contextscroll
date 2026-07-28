@@ -22,17 +22,25 @@ use evdev::{
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinHandle;
-use tokio::time::{MissedTickBehavior, interval};
+use tokio::time::{MissedTickBehavior, interval, timeout};
 
 type AnyError = Box<dyn Error + Send + Sync>;
+
+mod session;
+
+use session::SessionAuthorizer;
 
 const DEFAULT_CONFIG: &str = "/etc/contextscroll.conf";
 const VIRTUAL_NAME_PREFIX: &str = "ContextScroll virtual: ";
 const BUTTON_MIN: u16 = 0x110;
 const BUTTON_MAX_EXCLUSIVE: u16 = 0x120;
 const CONTEXT_REFRESH_GRACE: Duration = Duration::from_millis(60);
+const CLIENT_AUTH_TIMEOUT: Duration = Duration::from_secs(1);
+const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(1);
+const CLIENT_REVALIDATE_INTERVAL: Duration = Duration::from_millis(500);
+const MAX_PENDING_CLIENTS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct CursorState {
@@ -52,6 +60,7 @@ struct Arguments {
     config: PathBuf,
     debug: bool,
     check_config: bool,
+    check_session: bool,
     list_devices: bool,
 }
 
@@ -64,6 +73,7 @@ struct DaemonSignals {
     refresh_sender: watch::Sender<u64>,
     cursor_sender: watch::Sender<CursorState>,
     paused: AtomicBool,
+    helper_available: AtomicBool,
 }
 
 impl DaemonSignals {
@@ -80,6 +90,7 @@ impl DaemonSignals {
             refresh_sender,
             cursor_sender,
             paused: AtomicBool::new(false),
+            helper_available: AtomicBool::new(false),
         }
     }
 
@@ -129,6 +140,17 @@ impl DaemonSignals {
         self.paused.load(Ordering::Acquire)
     }
 
+    fn set_helper_available(&self, available: bool) {
+        self.helper_available.store(available, Ordering::Release);
+        if !available {
+            self.set_paused(false);
+        }
+    }
+
+    fn is_passthrough(&self) -> bool {
+        !self.helper_available.load(Ordering::Acquire) || self.is_paused()
+    }
+
     fn request_refresh(&self) -> u64 {
         let request_id = self.next_refresh_id.fetch_add(1, Ordering::SeqCst) + 1;
         self.refresh_sender.send_replace(request_id);
@@ -155,6 +177,7 @@ fn parse_arguments() -> Result<Arguments, String> {
         config: PathBuf::from(DEFAULT_CONFIG),
         debug: false,
         check_config: false,
+        check_session: false,
         list_devices: false,
     };
     let mut arguments = std::env::args().skip(1);
@@ -168,6 +191,7 @@ fn parse_arguments() -> Result<Arguments, String> {
             }
             "--debug" => result.debug = true,
             "--check-config" => result.check_config = true,
+            "--check-session" => result.check_session = true,
             "--list-devices" => result.list_devices = true,
             "--version" => {
                 println!("contextscroll {}", env!("CARGO_PKG_VERSION"));
@@ -176,7 +200,8 @@ fn parse_arguments() -> Result<Arguments, String> {
             "--help" | "-h" => {
                 println!(
                     "Usage: contextscroll [--config PATH] [--debug]\n\
-                     \x20                    [--check-config] [--list-devices]"
+                     \x20                    [--check-config] [--check-session]\n\
+                     \x20                    [--list-devices]"
                 );
                 std::process::exit(0);
             }
@@ -217,6 +242,7 @@ fn virtual_mouse(device: &Device) -> Result<VirtualDevice, AnyError> {
         .supported_keys()
         .ok_or("mouse has no key capabilities")?
         .iter()
+        .filter(|key| is_button(key.0))
         .collect();
     let mut relative: AttributeSet<RelativeAxisCode> = device
         .supported_relative_axes()
@@ -254,6 +280,31 @@ fn virtual_mouse(device: &Device) -> Result<VirtualDevice, AnyError> {
     Ok(builder
         .build()
         .map_err(|error| format!("creating virtual mouse: {error}"))?)
+}
+
+fn virtual_key_passthrough(device: &Device) -> Result<Option<VirtualDevice>, AnyError> {
+    let Some(supported) = device.supported_keys() else {
+        return Ok(None);
+    };
+    let keys: AttributeSet<KeyCode> = supported.iter().filter(|key| !is_button(key.0)).collect();
+    if keys.iter().next().is_none() {
+        return Ok(None);
+    }
+
+    let name = format!(
+        "{VIRTUAL_NAME_PREFIX}key passthrough: {}",
+        device.name().unwrap_or("unnamed mouse")
+    );
+    Ok(Some(
+        VirtualDevice::builder()
+            .map_err(|error| format!("opening /dev/uinput: {error}"))?
+            .name(&name)
+            .input_id(device.input_id())
+            .with_keys(&keys)
+            .map_err(|error| format!("copying hybrid-mouse key capabilities: {error}"))?
+            .build()
+            .map_err(|error| format!("creating hybrid-mouse key passthrough: {error}"))?,
+    ))
 }
 
 fn is_button(code: u16) -> bool {
@@ -311,10 +362,13 @@ fn run_mouse(
     device.set_nonblocking(true)?;
     let name = device.name().unwrap_or("unnamed mouse").to_owned();
     let mut output = virtual_mouse(&device)?;
+    let mut key_output = virtual_key_passthrough(&device)?;
     let mut interaction = Interaction::default();
     let mut wheel = WheelAccumulator::default();
     let mut batch = Vec::<InputEvent>::with_capacity(16);
+    let mut key_batch = Vec::<InputEvent>::with_capacity(4);
     let mut held = HashSet::<u16>::new();
+    let mut held_keys = HashSet::<u16>::new();
     let mut announced_active = false;
     let period = Duration::from_secs_f64(1.0 / settings.tick_hz);
     let mut previous_tick = Instant::now();
@@ -322,14 +376,20 @@ fn run_mouse(
     let mut last_wheel_debug = previous_tick
         .checked_sub(Duration::from_secs(1))
         .unwrap_or(previous_tick);
-    let mut was_paused = signals.is_paused();
+    let mut was_passthrough = signals.is_passthrough();
 
     eprintln!("INFO: grabbed {name} at {}", path.display());
+    if key_output.is_some() {
+        eprintln!(
+            "INFO: forwarding non-mouse keys from hybrid device {} through a separate virtual device",
+            path.display()
+        );
+    }
     let result: Result<(), AnyError> = (|| {
         while !shutdown.load(Ordering::Relaxed) {
-            let paused = signals.is_paused();
-            if paused != was_paused {
-                if paused {
+            let passthrough = signals.is_passthrough();
+            if passthrough != was_passthrough {
+                if passthrough {
                     if announced_active {
                         if let Some(generation) = signals.stop() {
                             cache.require_generation(generation);
@@ -341,9 +401,9 @@ fn run_mouse(
                 }
                 debug(
                     debug_enabled,
-                    format!("{}: paused={paused}", path.display()),
+                    format!("{}: passthrough={passthrough}", path.display()),
                 );
-                was_paused = paused;
+                was_passthrough = passthrough;
             }
             let now = Instant::now();
             let timeout = if interaction.scrolling {
@@ -365,8 +425,27 @@ fn run_mouse(
                     let code = event.code();
                     let value = event.value();
 
-                    if paused {
-                        if event_type == EventType::KEY || event_type == EventType::RELATIVE {
+                    if event_type == EventType::KEY && !is_button(code) {
+                        if key_output.is_none() {
+                            return Err(format!(
+                                "{} emitted an undeclared non-mouse key code {code}",
+                                path.display()
+                            )
+                            .into());
+                        }
+                        key_batch.push(event);
+                        if value == 1 {
+                            held_keys.insert(code);
+                        } else if value == 0 {
+                            held_keys.remove(&code);
+                        }
+                        continue;
+                    }
+
+                    if passthrough {
+                        if (event_type == EventType::KEY && is_button(code))
+                            || event_type == EventType::RELATIVE
+                        {
                             batch.push(event);
                             if event_type == EventType::KEY && is_button(code) {
                                 if value == 1 {
@@ -377,10 +456,18 @@ fn run_mouse(
                             }
                         } else if event_type == EventType::SYNCHRONIZATION
                             && code == SynchronizationCode::SYN_REPORT.0
-                            && !batch.is_empty()
                         {
-                            output.emit(&batch)?;
-                            batch.clear();
+                            if !batch.is_empty() {
+                                output.emit(&batch)?;
+                                batch.clear();
+                            }
+                            if !key_batch.is_empty() {
+                                key_output
+                                    .as_mut()
+                                    .ok_or("hybrid-mouse key passthrough disappeared")?
+                                    .emit(&key_batch)?;
+                                key_batch.clear();
+                            }
                         }
                         continue;
                     }
@@ -543,10 +630,19 @@ fn run_mouse(
                                 output.emit(&batch)?;
                                 batch.clear();
                             }
+                            if !key_batch.is_empty() {
+                                key_output
+                                    .as_mut()
+                                    .ok_or("hybrid-mouse key passthrough disappeared")?
+                                    .emit(&key_batch)?;
+                                key_batch.clear();
+                            }
                         }
                         continue;
                     }
-                    if event_type == EventType::KEY || event_type == EventType::RELATIVE {
+                    if (event_type == EventType::KEY && is_button(code))
+                        || event_type == EventType::RELATIVE
+                    {
                         batch.push(event);
                     }
                 }
@@ -608,22 +704,17 @@ fn run_mouse(
         let releases: Vec<_> = held.into_iter().map(release_event).collect();
         let _ = output.emit(&releases);
     }
+    if !held_keys.is_empty() {
+        let releases: Vec<_> = held_keys.into_iter().map(release_event).collect();
+        if let Some(output) = key_output.as_mut() {
+            let _ = output.emit(&releases);
+        }
+    }
     if announced_active {
         signals.stop();
     }
     eprintln!("INFO: released {}", path.display());
     result
-}
-
-fn uid_has_desktop_session(uid: u32) -> bool {
-    let path = format!("/run/systemd/users/{uid}");
-    let Ok(text) = fs::read_to_string(path) else {
-        return false;
-    };
-    text.lines().any(|line| {
-        line.strip_prefix("STATE=")
-            .is_some_and(|state| matches!(state, "active" | "online"))
-    })
 }
 
 async fn read_context_message<R>(
@@ -677,42 +768,79 @@ fn cursor_message(state: CursorState) -> Vec<u8> {
     .into_bytes()
 }
 
-async fn handle_context_client(
-    stream: UnixStream,
+#[derive(Clone)]
+struct ClientResources {
+    authorizer: Arc<SessionAuthorizer>,
     cache: Arc<ContextCache>,
     signals: Arc<DaemonSignals>,
-    mut activity: watch::Receiver<ActivityState>,
-    mut refresh_requests: watch::Receiver<u64>,
-    mut cursor: watch::Receiver<CursorState>,
+    activity: watch::Receiver<ActivityState>,
+    refresh_requests: watch::Receiver<u64>,
+    cursor: watch::Receiver<CursorState>,
     debug_enabled: bool,
+}
+
+struct ClientIdentity {
+    id: u64,
+    pid: u32,
+    uid: u32,
+    authority: watch::Receiver<u64>,
+}
+
+async fn handle_context_client(
+    stream: UnixStream,
+    mut identity: ClientIdentity,
+    mut resources: ClientResources,
 ) -> Result<(), AnyError> {
-    let credentials = stream.peer_cred()?;
-    let uid = credentials.uid();
-    if !uid_has_desktop_session(uid) {
-        return Err(format!("rejected context client uid={uid}").into());
-    }
-    debug(debug_enabled, format!("context client connected uid={uid}"));
+    debug(
+        resources.debug_enabled,
+        format!(
+            "context client connected pid={} uid={}",
+            identity.pid, identity.uid
+        ),
+    );
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::with_capacity(MAX_LINE_BYTES + 1, read_half);
     let mut line = Vec::<u8>::with_capacity(512);
-    let initial_activity = *activity.borrow();
+    let initial_activity = *resources.activity.borrow();
     write_half
         .write_all(&activity_message(initial_activity))
         .await?;
-    let initial_cursor = *cursor.borrow();
+    let initial_cursor = *resources.cursor.borrow();
     write_half
         .write_all(&cursor_message(initial_cursor))
         .await?;
+    let mut last_message = Instant::now();
+    let mut validation = interval(CLIENT_REVALIDATE_INTERVAL);
+    validation.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    validation.tick().await;
     loop {
         tokio::select! {
-            changed = activity.changed() => {
+            changed = identity.authority.changed() => {
                 changed?;
-                let state = *activity.borrow_and_update();
+                if *identity.authority.borrow_and_update() != identity.id {
+                    return Err("context client was superseded".into());
+                }
+            }
+            _ = validation.tick() => {
+                if last_message.elapsed() > CLIENT_IDLE_TIMEOUT {
+                    return Err("context client heartbeat expired".into());
+                }
+                match timeout(
+                    CLIENT_AUTH_TIMEOUT,
+                    resources.authorizer.authorize(identity.uid),
+                ).await {
+                    Ok(Ok(_)) => {}
+                    _ => return Err("context client session authorization expired".into()),
+                }
+            }
+            changed = resources.activity.changed() => {
+                changed?;
+                let state = *resources.activity.borrow_and_update();
                 if !state.active {
                     // Make the final visual position precede deactivation on
                     // the wire, even when Tokio selects the activity watch
                     // before a pending cursor-watch notification.
-                    let offset = *cursor.borrow();
+                    let offset = *resources.cursor.borrow();
                     write_half
                         .write_all(&cursor_message(offset))
                         .await?;
@@ -721,16 +849,16 @@ async fn handle_context_client(
                     .write_all(&activity_message(state))
                     .await?;
             }
-            changed = refresh_requests.changed() => {
+            changed = resources.refresh_requests.changed() => {
                 changed?;
-                let request_id = *refresh_requests.borrow_and_update();
+                let request_id = *resources.refresh_requests.borrow_and_update();
                 write_half
                     .write_all(&refresh_message(request_id))
                     .await?;
             }
-            changed = cursor.changed() => {
+            changed = resources.cursor.changed() => {
                 changed?;
-                let offset = *cursor.borrow_and_update();
+                let offset = *resources.cursor.borrow_and_update();
                 write_half
                     .write_all(&cursor_message(offset))
                     .await?;
@@ -739,11 +867,15 @@ async fn handle_context_client(
                 let Some(update) = message? else {
                     break;
                 };
+                if *identity.authority.borrow() != identity.id {
+                    return Err("context client is no longer authoritative".into());
+                }
+                last_message = Instant::now();
                 match update {
                     ClientUpdate::Context(context) => {
-                        cache.update(context);
+                        resources.cache.update(context);
                         debug(
-                            debug_enabled,
+                            resources.debug_enabled,
                             format!(
                                 "context updated to {:?} request={}",
                                 context.decision, context.request_id
@@ -751,8 +883,8 @@ async fn handle_context_client(
                         );
                     }
                     ClientUpdate::Control { paused } => {
-                        signals.set_paused(paused);
-                        debug(debug_enabled, format!("pause control updated to {paused}"));
+                        resources.signals.set_paused(paused);
+                        debug(resources.debug_enabled, format!("pause control updated to {paused}"));
                     }
                 }
             }
@@ -761,15 +893,7 @@ async fn handle_context_client(
     Ok(())
 }
 
-async fn context_server(
-    path: PathBuf,
-    cache: Arc<ContextCache>,
-    signals: Arc<DaemonSignals>,
-    activity: watch::Receiver<ActivityState>,
-    refresh_requests: watch::Receiver<u64>,
-    cursor: watch::Receiver<CursorState>,
-    debug_enabled: bool,
-) -> Result<(), AnyError> {
+async fn context_server(path: PathBuf, resources: ClientResources) -> Result<(), AnyError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -781,26 +905,77 @@ async fn context_server(
     let listener = UnixListener::bind(&path)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o666))?;
     eprintln!("INFO: context socket ready at {}", path.display());
+    let pending = Arc::new(Semaphore::new(MAX_PENDING_CLIENTS));
+    let (authority_sender, authority_receiver) = watch::channel(0_u64);
+    let next_client_id = Arc::new(AtomicU64::new(0));
     loop {
         let (stream, _) = listener.accept().await?;
-        let client_cache = Arc::clone(&cache);
-        let client_signals = Arc::clone(&signals);
-        let client_activity = activity.clone();
-        let client_refresh_requests = refresh_requests.clone();
-        let client_cursor = cursor.clone();
+        let Ok(permit) = Arc::clone(&pending).try_acquire_owned() else {
+            debug(
+                resources.debug_enabled,
+                "rejected context client: authentication limit reached",
+            );
+            continue;
+        };
+        let credentials = stream.peer_cred()?;
+        let Some(raw_peer_pid) = credentials.pid() else {
+            debug(
+                resources.debug_enabled,
+                "rejected context client without peer pid",
+            );
+            continue;
+        };
+        let Ok(peer_pid) = u32::try_from(raw_peer_pid) else {
+            debug(
+                resources.debug_enabled,
+                "rejected context client with invalid peer pid",
+            );
+            continue;
+        };
+        let peer_uid = credentials.uid();
+        let task_resources = resources.clone();
+        let client_authority = authority_receiver.clone();
+        let task_authority = authority_sender.clone();
+        let task_next_id = Arc::clone(&next_client_id);
         tokio::spawn(async move {
+            let _permit = permit;
+            let authentication = timeout(
+                CLIENT_AUTH_TIMEOUT,
+                task_resources.authorizer.authorize(peer_uid),
+            )
+            .await;
+            if !matches!(authentication, Ok(Ok(_))) {
+                debug(
+                    task_resources.debug_enabled,
+                    format!("rejected context client pid={peer_pid} uid={peer_uid}"),
+                );
+                return;
+            }
+            let client_id = task_next_id.fetch_add(1, Ordering::SeqCst) + 1;
+            task_authority.send_replace(client_id);
+            task_resources.cache.clear();
+            task_resources.signals.set_helper_available(true);
             if let Err(error) = handle_context_client(
                 stream,
-                client_cache,
-                client_signals,
-                client_activity,
-                client_refresh_requests,
-                client_cursor,
-                debug_enabled,
+                ClientIdentity {
+                    id: client_id,
+                    pid: peer_pid,
+                    uid: peer_uid,
+                    authority: client_authority,
+                },
+                task_resources.clone(),
             )
             .await
             {
-                debug(debug_enabled, format!("context client closed: {error}"));
+                debug(
+                    task_resources.debug_enabled,
+                    format!("context client closed: {error}"),
+                );
+            }
+            if *task_authority.borrow() == client_id {
+                task_authority.send_replace(0);
+                task_resources.cache.clear();
+                task_resources.signals.set_helper_available(false);
             }
         });
     }
@@ -832,8 +1007,21 @@ async fn run(arguments: Arguments) -> Result<(), AnyError> {
         print_devices();
         return Ok(());
     }
+    if arguments.check_session {
+        let authorizer = SessionAuthorizer::connect().await?;
+        // SAFETY: geteuid has no arguments and cannot violate Rust memory
+        // safety; it returns the effective UID of this process.
+        let uid = unsafe { libc::geteuid() };
+        let session = authorizer.authorize(uid).await?;
+        println!(
+            "authorized session={} uid={} seat={} type={}",
+            session.id, session.uid, session.seat, session.session_type
+        );
+        return Ok(());
+    }
 
     let cache = Arc::new(ContextCache::new());
+    let authorizer = Arc::new(SessionAuthorizer::connect().await?);
     let (activity_sender, activity_receiver) = watch::channel(ActivityState::default());
     let (refresh_sender, refresh_receiver) = watch::channel(0);
     let (cursor_sender, cursor_receiver) = watch::channel(CursorState::default());
@@ -845,12 +1033,15 @@ async fn run(arguments: Arguments) -> Result<(), AnyError> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let socket_task = tokio::spawn(context_server(
         PathBuf::from(&settings.socket_path),
-        Arc::clone(&cache),
-        Arc::clone(&signals),
-        activity_receiver,
-        refresh_receiver,
-        cursor_receiver,
-        arguments.debug,
+        ClientResources {
+            authorizer,
+            cache: Arc::clone(&cache),
+            signals: Arc::clone(&signals),
+            activity: activity_receiver,
+            refresh_requests: refresh_receiver,
+            cursor: cursor_receiver,
+            debug_enabled: arguments.debug,
+        },
     ));
     let mut device_tasks = HashMap::<PathBuf, JoinHandle<()>>::new();
     let mut ignored = HashSet::<PathBuf>::new();
@@ -1062,5 +1253,30 @@ mod tests {
         assert_eq!(cursor_direction(-10.0, deadzone), 0);
         assert_eq!(cursor_direction(10.0, deadzone), 0);
         assert_eq!(cursor_direction(0.0, deadzone), 0);
+    }
+
+    #[test]
+    fn keyboard_keys_are_never_mouse_buttons() {
+        assert!(is_button(KeyCode::BTN_LEFT.0));
+        assert!(is_button(KeyCode::BTN_MIDDLE.0));
+        assert!(is_button(KeyCode::BTN_SIDE.0));
+        assert!(!is_button(KeyCode::KEY_A.0));
+        assert!(!is_button(KeyCode::KEY_ENTER.0));
+    }
+
+    #[test]
+    fn missing_helper_forces_transparent_passthrough() {
+        let (activity_sender, _activity_receiver) = watch::channel(ActivityState::default());
+        let (refresh_sender, _refresh_receiver) = watch::channel(0);
+        let (cursor_sender, _cursor_receiver) = watch::channel(CursorState::default());
+        let signals = DaemonSignals::new(activity_sender, refresh_sender, cursor_sender);
+        assert!(signals.is_passthrough());
+        signals.set_helper_available(true);
+        assert!(!signals.is_passthrough());
+        signals.set_paused(true);
+        assert!(signals.is_passthrough());
+        signals.set_helper_available(false);
+        assert!(signals.is_passthrough());
+        assert!(!signals.is_paused());
     }
 }
