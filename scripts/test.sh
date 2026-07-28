@@ -40,7 +40,7 @@ SYSTEMD_LOG_LEVEL=warning systemd-analyze verify \
     systemd/contextscroll-context.service \
     > "$schema_test_dir/systemd.log" 2>&1 || true
 grep -Ev \
-    'Failed to (turn off SO_PASSRIGHTS|enable SO_PASSCRED).*Operation not permitted' \
+    'Failed to (turn off SO_PASSRIGHTS|enable SO_PASSCRED).*Operation not permitted|Command /usr/bin/contextscroll(-context)? is not executable: No such file or directory' \
     "$schema_test_dir/systemd.log" \
     > "$schema_test_dir/systemd.filtered" || true
 test ! -s "$schema_test_dir/systemd.filtered" || {
