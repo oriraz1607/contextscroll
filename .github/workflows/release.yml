@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to publish
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -16,15 +22,16 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
       - name: Validate tag and commit
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
           version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n1)
           test "$RELEASE_TAG" = "v$version"
           git fetch origin main
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          git merge-base --is-ancestor HEAD origin/main
       - name: Install Rust 1.85
         run: rustup toolchain install 1.85.0 --profile minimal --component clippy --component rustfmt
       - run: rustup default 1.85.0
@@ -53,6 +60,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
       - name: Install exact Rust and cross
         run: |
           rustup toolchain install 1.85.0 --profile minimal
@@ -64,10 +73,17 @@ jobs:
         run: |
           set -euo pipefail
           cross build --release --locked --target "$TARGET"
-          first=$(sha256sum "target/$TARGET/release/contextscroll" | cut -d' ' -f1)
-          CARGO_TARGET_DIR=target-repro cross build --release --locked --target "$TARGET"
-          second=$(sha256sum "target-repro/$TARGET/release/contextscroll" | cut -d' ' -f1)
-          test "$first" = "$second"
+          install -m755 \
+            "target/$TARGET/release/contextscroll" \
+            "$RUNNER_TEMP/contextscroll-first"
+          cargo clean
+          cross build --release --locked --target "$TARGET"
+          sha256sum \
+            "$RUNNER_TEMP/contextscroll-first" \
+            "target/$TARGET/release/contextscroll"
+          cmp --silent \
+            "$RUNNER_TEMP/contextscroll-first" \
+            "target/$TARGET/release/contextscroll"
           description=$(file "target/$TARGET/release/contextscroll")
           case "$TARGET" in
             x86_64-*) grep -q 'x86-64' <<<"$description" ;;
@@ -85,7 +101,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
           export SOURCE_DATE_EPOCH
           ./scripts/build-bundle.sh \
             --target "$TARGET" \
@@ -119,6 +135,8 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: bundle-*
@@ -146,7 +164,7 @@ jobs:
       - name: Create immutable-ready release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
           gh release create "$RELEASE_TAG" \
