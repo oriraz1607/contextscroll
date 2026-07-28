@@ -7,9 +7,13 @@ decision easy to test.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Iterable, Mapping
+
+MAX_RULES = 128
+MAX_RULES_BYTES = 65_536
 
 
 class Decision(StrEnum):
@@ -52,6 +56,124 @@ class SemanticNode:
             name=name[:160],
             hyperlink_target=bool(hyperlink_target),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ContextRule:
+    """One ordered user override for the built-in semantic classifier."""
+
+    decision: Decision
+    application: str = ""
+    role: str = ""
+    states: frozenset[str] = field(default_factory=frozenset)
+    actions: frozenset[str] = field(default_factory=frozenset)
+    name: str = ""
+    enabled: bool = True
+
+    def matches(
+        self, nodes: tuple[SemanticNode, ...], application: str
+    ) -> bool:
+        if not self.enabled:
+            return False
+        if self.application and self.application not in normalize(application):
+            return False
+        if not any((self.role, self.states, self.actions, self.name)):
+            return bool(self.application)
+        for node in nodes:
+            if self.role and node.role != self.role:
+                continue
+            if self.states and not self.states.issubset(node.states):
+                continue
+            if self.actions and not self.actions.issubset(node.actions):
+                continue
+            if self.name and self.name not in normalize(node.name):
+                continue
+            return True
+        return False
+
+
+def parse_context_rules(text: str) -> tuple[tuple[ContextRule, ...], list[str]]:
+    """Validate bounded preferences JSON while retaining valid rules."""
+
+    if len(text.encode("utf-8")) > MAX_RULES_BYTES:
+        return (), [f"rules exceed the {MAX_RULES_BYTES}-byte limit"]
+    try:
+        payload = json.loads(text)
+    except (TypeError, json.JSONDecodeError) as error:
+        return (), [f"rules are not valid JSON: {error}"]
+    if not isinstance(payload, list):
+        return (), ["rules must be a JSON array"]
+    errors: list[str] = []
+    rules: list[ContextRule] = []
+    for index, item in enumerate(payload[:MAX_RULES]):
+        prefix = f"rule {index + 1}"
+        if not isinstance(item, dict):
+            errors.append(f"{prefix} is not an object")
+            continue
+
+        def string(name: str, maximum: int) -> str:
+            value = item.get(name, "")
+            if not isinstance(value, str):
+                raise ValueError(f"{name} must be text")
+            return normalize(value)[:maximum]
+
+        def string_set(name: str) -> frozenset[str]:
+            value = item.get(name, [])
+            if not isinstance(value, list) or any(
+                not isinstance(entry, str) for entry in value
+            ):
+                raise ValueError(f"{name} must be a text array")
+            return frozenset(
+                normalized
+                for entry in value[:32]
+                if (normalized := normalize(entry)[:80])
+            )
+
+        try:
+            decision = Decision(item.get("decision", ""))
+            if decision not in (Decision.NATIVE, Decision.SCROLL):
+                raise ValueError("decision must be native or scroll")
+            enabled = item.get("enabled", True)
+            if not isinstance(enabled, bool):
+                raise ValueError("enabled must be true or false")
+            rule = ContextRule(
+                decision=decision,
+                application=string("application", 120),
+                role=string("role", 80),
+                states=string_set("states"),
+                actions=string_set("actions"),
+                name=string("name", 160),
+                enabled=enabled,
+            )
+            if not any(
+                (
+                    rule.application,
+                    rule.role,
+                    rule.states,
+                    rule.actions,
+                    rule.name,
+                )
+            ):
+                raise ValueError("at least one matcher is required")
+        except (ValueError, TypeError) as error:
+            errors.append(f"{prefix}: {error}")
+            continue
+        rules.append(rule)
+    if len(payload) > MAX_RULES:
+        errors.append(f"only the first {MAX_RULES} rules were loaded")
+    return tuple(rules), errors
+
+
+def matching_rule(
+    nodes: Iterable[SemanticNode],
+    application: str,
+    rules: Iterable[ContextRule],
+) -> Decision | None:
+    chain = tuple(nodes)
+    for rule in rules:
+        if rule.matches(chain, application):
+            return rule.decision
+    return None
 
 
 # Controls for which a middle click can have native meaning. This deliberately
@@ -127,11 +249,21 @@ BROWSER_CONTENT_ROLES = {
     "heading",
     "image",
     "landmark",
+    "list item",
     "paragraph",
     "section",
     "static",
+    "table cell",
     "text",
     "video",
+}
+
+# HTML list items and table cells are structural page content, unlike their
+# interactive counterparts in desktop list and grid widgets. A real browser
+# link, control, or editable descendant is still recognized independently.
+BROWSER_STRUCTURAL_CONTENT_ROLES = {
+    "list item",
+    "table cell",
 }
 
 BROWSER_APPLICATION_MARKERS = {
@@ -235,10 +367,13 @@ PASSIVE_ACTIONS = {
 MAX_DIRECT_ACTION_ANCESTORS = 4
 
 
-def is_explicit_native_target(node: SemanticNode) -> bool:
+def is_explicit_native_target(
+    node: SemanticNode,
+    ignored_roles: frozenset[str] = frozenset(),
+) -> bool:
     if node.hyperlink_target:
         return True
-    if node.role in NATIVE_ROLES:
+    if node.role in NATIVE_ROLES and node.role not in ignored_roles:
         return True
     if node.attributes.get("tag") == "a":
         return True
@@ -266,9 +401,10 @@ def chain_has_native_target(
     *,
     include_editable: bool,
     include_actions: bool,
+    ignored_roles: frozenset[str] = frozenset(),
 ) -> bool:
     if any(
-        is_explicit_native_target(node)
+        is_explicit_native_target(node, ignored_roles)
         or (include_editable and "editable" in node.states)
         for node in chain
     ):
@@ -311,7 +447,9 @@ def is_libreoffice_writer(
 
 
 def classify_chain(
-    nodes: Iterable[SemanticNode], application: str = ""
+    nodes: Iterable[SemanticNode],
+    application: str = "",
+    rules: Iterable[ContextRule] = (),
 ) -> Decision:
     """Classify a deepest-first accessible ancestry chain.
 
@@ -321,6 +459,9 @@ def classify_chain(
     """
 
     chain = tuple(nodes)
+    override = matching_rule(chain, application, rules)
+    if override is not None:
+        return override
     browser = is_browser_application(application)
     if is_libreoffice_writer(chain, application):
         # Writer exposes its document body as editable text. A blanket
@@ -341,6 +482,11 @@ def classify_chain(
         # behavior but not whether middle-click has a native meaning. Generic
         # browser actions therefore cannot safely override autoscroll.
         include_actions=not browser,
+        ignored_roles=(
+            frozenset(BROWSER_STRUCTURAL_CONTENT_ROLES)
+            if browser
+            else frozenset()
+        ),
     ):
         return Decision.NATIVE
     if any(node.role in SCROLL_ROLES for node in chain):

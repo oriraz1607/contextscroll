@@ -54,6 +54,10 @@ rm -f /usr/bin/contextscroll-context
 rm -f /usr/lib/systemd/system/contextscroll.service
 rm -f /usr/lib/systemd/user/contextscroll-context.service
 rm -rf /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll
+rm -f /usr/share/glib-2.0/schemas/org.contextscroll.gschema.xml
+if command -v glib-compile-schemas >/dev/null; then
+    glib-compile-schemas /usr/share/glib-2.0/schemas
+fi
 rm -rf /usr/lib/contextscroll
 
 if [[ $remove_service_account == true ]]; then

@@ -4,7 +4,7 @@ import time
 from types import SimpleNamespace
 from unittest import mock
 
-from contextscroll.classifier import Decision, SemanticNode
+from contextscroll.classifier import Decision, SemanticNode, classify_chain
 from contextscroll.context_agent import (
     AccessibilityTree,
     ContextWorker,
@@ -87,6 +87,72 @@ class FakeSemanticAccessible:
 
 
 class ContextTreeTests(unittest.TestCase):
+    def test_wayland_desktop_never_falls_through_to_atspi_window(self):
+        class NoAccessibilityLookup:
+            @staticmethod
+            def get_desktop(_index):
+                raise AssertionError("desktop must not query AT-SPI windows")
+
+        tree = AccessibilityTree(NoAccessibilityLookup())
+        self.assertEqual(
+            tree.chain_at(
+                400,
+                300,
+                (0, 0, 0, 0, 0, ""),
+            ),
+            ([], ""),
+        )
+        report = tree.report_at(
+            400,
+            300,
+            (0, 0, 0, 0, 0, ""),
+        )
+        self.assertEqual(report.decision, Decision.UNKNOWN)
+
+    def test_x11_coordinate_without_window_still_uses_atspi(self):
+        desktop = object()
+
+        class Accessibility:
+            @staticmethod
+            def get_desktop(_index):
+                return desktop
+
+        tree = AccessibilityTree(Accessibility())
+        top_level = object()
+        deepest = SimpleNamespace(
+            get_parent=lambda: top_level,
+            get_application=lambda: None,
+        )
+        tree._top_level_at = lambda value, _x, _y: (
+            top_level if value is desktop else None
+        )
+        tree._deepest = lambda value, _x, _y: (
+            deepest if value is top_level else None
+        )
+        tree.node = lambda _accessible: SemanticNode.create("frame")
+        tree._mark_hyperlink_at_point = lambda *_args: None
+        # None is deliberately distinct from GNOME's zero-sized compositor
+        # snapshot and preserves the coordinate-only X11 fallback.
+        nodes, _application = tree.chain_at(400, 300, None)
+        self.assertTrue(nodes)
+
+    def test_page_to_tab_hit_test_restarts_at_window_root(self):
+        tree = AccessibilityTree(atspi=None)
+        window = object()
+        stale_document = object()
+        tab = object()
+        tree.last_descent = [window, stale_document]
+        children = {
+            window: tab,
+            tab: None,
+            stale_document: None,
+        }
+        tree._child_at = lambda accessible, _x, _y: children[accessible]
+        tree._showing = lambda _accessible: True
+        tree._contains = lambda _accessible, _x, _y: True
+
+        self.assertIs(tree._deepest(window, 400, 20), tab)
+
     def test_inactive_cached_window_is_replaced(self):
         tree = AccessibilityTree(atspi=None)
         desktop = object()
@@ -260,95 +326,10 @@ class ContextTreeTests(unittest.TestCase):
         )
         self.assertEqual(mapped, (580, 524))
 
-    def test_finds_real_link_inside_clickable_browser_card(self):
-        link = FakeSemanticAccessible(
-            "text", attributes={"xml-roles": "link"}
-        )
-        card = FakeSemanticAccessible(
-            "section",
-            children=[
-                FakeSemanticAccessible(
-                    "section",
-                    children=[
-                        FakeSemanticAccessible(
-                            "section", children=[link]
-                        )
-                    ],
-                )
-            ],
-        )
-        tree = AccessibilityTree(atspi=None)
-
-        self.assertTrue(tree._has_hyperlink_descendant(card))
-
-    def test_does_not_treat_an_image_uri_as_a_hyperlink(self):
-        image = FakeSemanticAccessible("image")
-        image.is_hyperlink = lambda: True
-        card = FakeSemanticAccessible("section", children=[image])
-        tree = AccessibilityTree(atspi=None)
-
-        self.assertFalse(tree._has_hyperlink_descendant(card))
-
-    def test_marks_linked_click_container_only_in_a_browser(self):
-        card = FakeSemanticAccessible(
-            "section",
-            children=[FakeSemanticAccessible("link")],
-            extents=SimpleNamespace(
-                x=100, y=100, width=400, height=250
-            ),
-        )
-        top_level = FakeSemanticAccessible(
-            "frame",
-            extents=SimpleNamespace(
-                x=0, y=0, width=1920, height=1080
-            ),
-        )
-        node = SemanticNode.create("section", actions=["click"])
-        tree = AccessibilityTree(atspi=None)
-        tree.atspi = SimpleNamespace(
-            CoordType=SimpleNamespace(SCREEN=1)
-        )
-
-        browser_nodes = [node]
-        tree._mark_linked_click_target(
-            [card], browser_nodes, "Brave Browser", top_level
-        )
-        self.assertTrue(browser_nodes[0].hyperlink_target)
-
-        desktop_nodes = [node]
-        tree._mark_linked_click_target(
-            [card], desktop_nodes, "Example Application", top_level
-        )
-        self.assertFalse(desktop_nodes[0].hyperlink_target)
-
-    def test_does_not_scan_a_page_sized_click_container(self):
-        page = FakeSemanticAccessible(
-            "section",
-            children=[FakeSemanticAccessible("link")],
-            extents=SimpleNamespace(
-                x=0, y=100, width=1920, height=900
-            ),
-        )
-        top_level = FakeSemanticAccessible(
-            "frame",
-            extents=SimpleNamespace(
-                x=0, y=0, width=1920, height=1080
-            ),
-        )
-        nodes = [SemanticNode.create("section", actions=["click"])]
-        tree = AccessibilityTree(
-            SimpleNamespace(CoordType=SimpleNamespace(SCREEN=1))
-        )
-
-        tree._mark_linked_click_target(
-            [page], nodes, "Firefox", top_level
-        )
-
-        self.assertFalse(nodes[0].hyperlink_target)
-
     def test_finds_link_at_point_when_hit_test_returns_plain_text(self):
         link = FakeSemanticAccessible(
-            "link",
+            "text",
+            attributes={"xml-roles": "link"},
             extents=SimpleNamespace(
                 x=300, y=400, width=120, height=24
             ),
@@ -369,6 +350,62 @@ class ContextTreeTests(unittest.TestCase):
         )
         self.assertFalse(
             tree._has_hyperlink_at_point(comment, 500, 410)
+        )
+
+    def test_youtube_comment_text_scrolls_but_actual_link_is_native(self):
+        link = FakeSemanticAccessible(
+            "link",
+            extents=SimpleNamespace(
+                x=300, y=400, width=120, height=24
+            ),
+        )
+        comment = FakeSemanticAccessible(
+            "section",
+            children=[
+                FakeSemanticAccessible("static"),
+                link,
+            ],
+        )
+        tree = AccessibilityTree(
+            SimpleNamespace(CoordType=SimpleNamespace(SCREEN=1))
+        )
+
+        def nodes():
+            return [
+                SemanticNode.create(
+                    "text", actions=["clickancestor"]
+                ),
+                SemanticNode.create(
+                    "section",
+                    actions=["click", "showcontextmenu"],
+                ),
+            ]
+
+        plain_text_nodes = nodes()
+        tree._mark_hyperlink_at_point(
+            [object(), comment],
+            plain_text_nodes,
+            "Brave Browser",
+            500,
+            410,
+        )
+        self.assertEqual(
+            classify_chain(plain_text_nodes, "Brave Browser"),
+            Decision.SCROLL,
+        )
+
+        link_nodes = nodes()
+        tree._mark_hyperlink_at_point(
+            [object(), comment],
+            link_nodes,
+            "Brave Browser",
+            350,
+            410,
+        )
+        self.assertTrue(link_nodes[0].hyperlink_target)
+        self.assertEqual(
+            classify_chain(link_nodes, "Brave Browser"),
+            Decision.NATIVE,
         )
 
 
@@ -417,9 +454,9 @@ class ContextWorkerTests(unittest.TestCase):
             def __init__(self):
                 self.chunks = [
                     (
-                        b'{"v":1,"type":"activity","active":true,'
+                        b'{"v":2,"type":"activity","active":true,'
                         b'"generation":4}\n'
-                        b'{"v":1,"type":"activity","active":false,'
+                        b'{"v":2,"type":"activity","active":false,'
                         b'"generation":5}\n'
                     )
                 ]
@@ -452,7 +489,7 @@ class ContextWorkerTests(unittest.TestCase):
         class FakeConnection:
             def __init__(self):
                 self.chunks = [
-                    b'{"v":1,"type":"refresh","request_id":23}\n'
+                    b'{"v":2,"type":"refresh","request_id":23}\n'
                 ]
 
             def recv(self, _size, _flags):
@@ -470,16 +507,39 @@ class ContextWorkerTests(unittest.TestCase):
         refreshes = []
         worker.set_refresh_callback(lambda: refreshes.append(True))
 
-        worker._receive_activity()
+        refreshed = worker._receive_activity()
 
         self.assertEqual(worker.pending_request_id, 23)
         self.assertEqual(refreshes, [True])
+        self.assertTrue(refreshed)
+
+    def test_explicit_refresh_bypasses_background_query_throttle(self):
+        worker = ContextWorker(
+            tree=object(),
+            points=LatestPoint(),
+            socket_path="/not-used",
+            stop=threading.Event(),
+        )
+        worker.last_report = ContextReport(
+            Decision.SCROLL,
+            request_id=22,
+        )
+        worker.pending_request_id = 23
+
+        self.assertEqual(worker._query_delay(10.0, 9.999), 0.0)
+
+        worker.last_report = ContextReport(
+            Decision.SCROLL,
+            request_id=23,
+        )
+        self.assertGreater(worker._query_delay(10.0, 9.999), 0.0)
 
     def test_receives_visual_cursor_offsets(self):
         class FakeConnection:
             def __init__(self):
                 self.chunks = [
-                    b'{"v":1,"type":"cursor","x":-19,"y":27}\n'
+                    b'{"v":2,"type":"cursor","x":-19,"y":27,'
+                    b'"direction":5}\n'
                 ]
 
             def recv(self, _size, _flags):
@@ -495,11 +555,39 @@ class ContextWorkerTests(unittest.TestCase):
         )
         worker.connection = FakeConnection()
         offsets = []
-        worker.set_cursor_callback(lambda x, y: offsets.append((x, y)))
+        worker.set_cursor_callback(
+            lambda x, y, direction: offsets.append((x, y, direction))
+        )
 
         worker._receive_activity()
 
-        self.assertEqual(offsets, [(-19, 27)])
+        self.assertEqual(offsets, [(-19, 27, 5)])
+
+    def test_sends_persistent_pause_control_before_context(self):
+        class FakeConnection:
+            def __init__(self):
+                self.messages = []
+
+            def sendall(self, message):
+                self.messages.append(message)
+
+        worker = ContextWorker(
+            tree=object(),
+            points=LatestPoint(),
+            socket_path="/not-used",
+            stop=threading.Event(),
+        )
+        worker.connection = FakeConnection()
+        worker.set_paused(True)
+
+        worker._send()
+
+        self.assertEqual(
+            worker.connection.messages[0],
+            b'{"v":2,"type":"control","paused":true}\n',
+        )
+        self.assertIn(b'"type":"context"', worker.connection.messages[1])
+        self.assertFalse(worker.control_dirty)
 
     def test_retries_unknown_without_pointer_movement(self):
         stop = threading.Event()

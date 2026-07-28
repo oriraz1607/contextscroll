@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from .classifier import Decision
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MAX_LINE_BYTES = 2048
 MAX_CONTEXT_AGE_SECONDS = 0.75
 
@@ -40,6 +40,7 @@ class RefreshReport:
 class CursorReport:
     x: int
     y: int
+    direction: int = 0
 
 
 def encode(report: ContextReport) -> bytes:
@@ -54,6 +55,17 @@ def encode(report: ContextReport) -> bytes:
         "y": report.y,
         "request_id": report.request_id,
         "generation": report.generation,
+    }
+    return json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n"
+
+
+def encode_control(paused: bool) -> bytes:
+    if not isinstance(paused, bool):
+        raise ValueError("paused must be boolean")
+    payload = {
+        "v": PROTOCOL_VERSION,
+        "type": "control",
+        "paused": paused,
     }
     return json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n"
 
@@ -152,7 +164,14 @@ def decode_daemon(
             ):
                 raise ValueError(f"{key} is out of range")
             coordinates.append(value)
-        return CursorReport(*coordinates)
+        direction = payload.get("direction")
+        if (
+            not isinstance(direction, int)
+            or isinstance(direction, bool)
+            or direction not in (0, 1, 5)
+        ):
+            raise ValueError("direction is out of range")
+        return CursorReport(*coordinates, direction)
     raise ValueError("invalid daemon report")
 
 

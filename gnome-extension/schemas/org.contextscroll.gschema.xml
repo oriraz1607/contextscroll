@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.contextscroll" path="/org/contextscroll/">
+    <key name="paused" type="b">
+      <default>false</default>
+      <summary>Pause ContextScroll</summary>
+      <description>Pass mouse input through without starting autoscroll.</description>
+    </key>
+    <key name="rules-json" type="s">
+      <default>'[]'</default>
+      <summary>Ordered context rules</summary>
+      <description>Validated user overrides for semantic context classification.</description>
+    </key>
+    <key name="direction-aware-cursor" type="b">
+      <default>true</default>
+      <summary>Show scrolling direction</summary>
+      <description>Show whether vertical autoscroll is moving up or down.</description>
+    </key>
+  </schema>
+</schemalist>

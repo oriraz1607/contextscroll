@@ -19,6 +19,9 @@ ProtectSystem=strict
 # libatspi reads per-session bus metadata from the user's home. Keep that
 # visible but immutable.
 ProtectHome=read-only
+# Gio.Settings uses dconf's per-session shared-memory file for live,
+# persistent Quick Settings and context-rule updates.
+ReadWritePaths=%t/dconf
 PrivateTmp=yes
 PrivateNetwork=yes
 IPAddressDeny=any

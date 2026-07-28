@@ -39,7 +39,10 @@ seat focus inhibitor keeps wheel events directed to the under-pointer
 application while the native cursor is hidden.
 
 Its service exposes `/tmp/.X11-unix` read-only inside otherwise-private
-network and temporary-file namespaces.
+network and temporary-file namespaces. The only writable filesystem exception
+is the user's `%t/dconf` runtime directory, which Gio.Settings requires for
+live preference updates; the persistent settings database in the home
+directory remains read-only to the helper.
 
 The helper enables `org.a11y.Status.IsEnabled` while running so applications
 such as Firefox publish AT-SPI objects. It does not enable
@@ -58,12 +61,13 @@ The helper sends only:
 - pointer coordinates;
 - the monotonic ID of a refresh request being acknowledged;
 - the cursor context generation that produced the decision.
+- the user's boolean pause state.
 
 Names are used only for diagnostics and are not persisted.
 
-The daemon sends one aggregate boolean (`active`) and bounded relative cursor
-offsets back to the authenticated helper so it can render the autoscroll
-cursor. It can also send a monotonic refresh request ID after motion
+The daemon sends one aggregate boolean (`active`), bounded relative cursor
+offsets, and an enumerated up/down direction back to the authenticated helper so it
+can render the autoscroll cursor. It can also send a monotonic refresh request ID after motion
 invalidates cached context. It does not send device identities or application
 data to the user session.
 
@@ -80,6 +84,8 @@ Messages use bounded newline-delimited JSON:
 - exact protocol version and message type;
 - an enumerated decision value;
 - a boolean active state in daemon-to-helper messages;
+- a boolean pause control in helper-to-daemon messages;
+- a cursor direction bounded to neutral, up, or down;
 - a bounded monotonic refresh request ID;
 - a bounded context generation used to reject pre-warp decisions;
 - malformed or oversized input disconnects the client.

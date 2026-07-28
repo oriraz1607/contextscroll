@@ -22,13 +22,16 @@ Highlights:
 - Firefox, Brave, Chrome/Chromium, Electron, and other accessible browsers;
 - LibreOffice Writer, file managers, PDF/document/image viewers, lists,
   tables, trees, and standard desktop scroll panes;
+- ordered per-user context rules for application and AT-SPI semantics;
+- persistent pause/resume from GNOME Quick Settings and Extension Manager;
 - GNOME Wayland support through the included Shell extension and X11 support
   through Xlib;
 - no hold threshold, screenshot capture, or configurable latency parameter;
   fresh semantic decisions route immediately.
 
-On GNOME Wayland, the normal pointer changes to a compact black four-direction
-autoscroll cursor with a white outline while autoscroll is active. The
+On GNOME Wayland, the normal pointer changes to a compact black cursor with a
+white outline while autoscroll is active. It shows whether the actual filtered
+vertical scroll is moving up or down without encoding speed. The
 replacement cursor is click-through and follows physical mouse movement while
 the hidden compositor pointer remains anchored at the activation point. This
 keeps Chromium's tab strip away from generated wheel events without making the
@@ -115,6 +118,7 @@ Runtime:
 - Python 3;
 - PyGObject with the AT-SPI 2 introspection bindings.
 - `libX11` (normally already installed by XWayland).
+- GLib's `glib-compile-schemas` utility.
 
 Build:
 
@@ -125,13 +129,13 @@ Build:
 Fedora:
 
 ```bash
-sudo dnf install acl cargo rust python3-gobject at-spi2-core libX11
+sudo dnf install acl cargo rust python3-gobject at-spi2-core libX11 glib2
 ```
 
 Debian/Ubuntu package names are typically:
 
 ```bash
-sudo apt install acl cargo rustc python3-gi gir1.2-atspi-2.0 at-spi2-core libx11-6
+sudo apt install acl cargo rustc python3-gi gir1.2-atspi-2.0 at-spi2-core libx11-6 libglib2.0-bin
 ```
 
 ## Install
@@ -141,10 +145,10 @@ First stop any other daemon that exclusively grabs the same mouse.
 For a one-command install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oriraz1607/contextscroll/v0.3.2/scripts/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oriraz1607/contextscroll/v0.4.0/scripts/bootstrap.sh | bash
 ```
 
-The bootstrap creates a temporary shallow checkout of the immutable `v0.3.2`
+The bootstrap creates a temporary shallow checkout of the immutable `v0.4.0`
 release, runs the normal installer, and removes the checkout afterward.
 
 To install from an existing checkout instead:
@@ -192,7 +196,9 @@ The default interaction is toggle mode:
 2. Middle-click once.
 3. Move the physical mouse to control speed and direction. The replacement
    cursor follows you while wheel events remain on the original content.
-4. Click any mouse button to stop. The stopping click is consumed.
+4. Click any mouse button to stop. A background stopping click is consumed;
+   middle-clicking a native target such as a browser tab or link both stops
+   autoscroll and performs that target's normal middle-click action.
 
 Clearly vertical or horizontal gestures temporarily suppress cross-axis wheel
 jitter, preventing small sideways movement from becoming browser navigation.
@@ -202,6 +208,30 @@ or a change of direction immediately makes the other scroll axis available.
 Point at a browser tab, link, button, menu, or editable field and middle-click
 normally. With fresh context, both the press and release are forwarded
 immediately.
+
+## GNOME controls and context rules
+
+The GNOME system menu contains a **ContextScroll** Quick Settings tile. Turning
+it off pauses autoscroll, ends an active scroll immediately, restores the real
+pointer, and passes all mouse input through unchanged. The choice is per-user
+and persists across logins.
+
+Open ContextScroll from Extension Manager or GNOME Extensions to edit:
+
+- the same pause state;
+- the direction-aware cursor toggle;
+- ordered context rules.
+
+Each context rule chooses native middle-click or autoscroll and can match an
+application name plus an accessible role, name, required states, and required
+actions. All semantic fields on one rule must match the same accessible item.
+The first enabled matching rule wins, and rules can be reordered by dragging
+or with the arrow buttons. New rules start disabled.
+
+Rules deliberately override the built-in safety classifier. In particular, a
+rule that forces autoscroll on a link or control suppresses its native
+middle-click behavior. Invalid rules are skipped and reported in the user
+service log without disabling the built-in classifier.
 
 Hold mode is also available in `/etc/contextscroll.conf`:
 
@@ -296,7 +326,8 @@ other mouse service.
   mouse-class event nodes and `/dev/uinput`.
 - It accepts context only from a Unix-socket peer whose UID logind reports as
   an active or online desktop user.
-- Protocol lines are capped at 2048 bytes before JSON parsing.
+- Protocol v2 lines are capped at 2048 bytes before JSON parsing. Pause control
+  is a boolean, and cursor direction is bounded to neutral, up, or down.
 - Context expires after 750 ms. The helper sends a 200 ms heartbeat, so a
   crashed or frozen helper automatically returns the daemon to native clicks.
 - The hot path uses no mutex and performs no allocation for its context

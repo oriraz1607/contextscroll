@@ -38,7 +38,7 @@ fi
     exit 1
 }
 
-for requirement in getent groupadd useradd setfacl udevadm; do
+for requirement in getent groupadd useradd setfacl udevadm glib-compile-schemas; do
     command -v "$requirement" >/dev/null || {
         echo "$requirement is required to install ContextScroll." >&2
         exit 1
@@ -95,8 +95,19 @@ install -Dm644 gnome-extension/metadata.json \
     /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/metadata.json
 install -Dm644 gnome-extension/extension.js \
     /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/extension.js
+install -Dm644 gnome-extension/prefs.js \
+    /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/prefs.js
 install -Dm644 gnome-extension/icons/autoscroll-cursor.svg \
     /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/autoscroll-cursor.svg
+install -Dm644 gnome-extension/icons/autoscroll-direction.svg \
+    /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/autoscroll-direction.svg
+install -Dm644 gnome-extension/schemas/org.contextscroll.gschema.xml \
+    /usr/share/glib-2.0/schemas/org.contextscroll.gschema.xml
+glib-compile-schemas /usr/share/glib-2.0/schemas
+install -Dm644 gnome-extension/schemas/org.contextscroll.gschema.xml \
+    /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/schemas/org.contextscroll.gschema.xml
+glib-compile-schemas \
+    /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/schemas
 if [[ -n $desktop_user && $desktop_user != root ]]; then
     desktop_home=$(getent passwd "$desktop_user" | cut -d: -f6)
     desktop_group=$(id -gn "$desktop_user")
@@ -108,8 +119,21 @@ if [[ -n $desktop_user && $desktop_user != root ]]; then
     install -m644 -o "$desktop_user" -g "$desktop_group" \
         gnome-extension/extension.js "$user_extension/extension.js"
     install -m644 -o "$desktop_user" -g "$desktop_group" \
+        gnome-extension/prefs.js "$user_extension/prefs.js"
+    install -m644 -o "$desktop_user" -g "$desktop_group" \
         gnome-extension/icons/autoscroll-cursor.svg \
         "$user_extension/autoscroll-cursor.svg"
+    install -m644 -o "$desktop_user" -g "$desktop_group" \
+        gnome-extension/icons/autoscroll-direction.svg \
+        "$user_extension/autoscroll-direction.svg"
+    install -d -m755 -o "$desktop_user" -g "$desktop_group" \
+        "$user_extension/schemas"
+    install -m644 -o "$desktop_user" -g "$desktop_group" \
+        gnome-extension/schemas/org.contextscroll.gschema.xml \
+        "$user_extension/schemas/org.contextscroll.gschema.xml"
+    install -m644 -o "$desktop_user" -g "$desktop_group" \
+        /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/schemas/gschemas.compiled \
+        "$user_extension/schemas/gschemas.compiled"
 fi
 install -Dm644 systemd/contextscroll.service \
     /usr/lib/systemd/system/contextscroll.service

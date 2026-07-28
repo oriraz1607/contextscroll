@@ -194,6 +194,24 @@ class GnomeShellPointer:
             # Preserve compatibility with a cached pre-upgrade extension.
             return
 
+    def set_indicator_state(self, x: int, y: int, direction: int) -> None:
+        if self._proxy is None or self._glib is None:
+            return
+        try:
+            self._proxy.call_sync(
+                "SetIndicatorState",
+                self._glib.Variant(
+                    "(iiu)", (int(x), int(y), int(direction))
+                ),
+                self._gio.DBusCallFlags.NONE,
+                1_000,
+                None,
+            )
+        except Exception:
+            # A running Shell can retain an older extension until logout.
+            # Preserve its position-only cursor behavior during that window.
+            self.set_indicator_offset(x, y)
+
     def close(self) -> None:
         self.set_indicator(False)
         proxy = getattr(self, "_proxy", None)

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-pub const PROTOCOL_VERSION: u8 = 1;
+pub const PROTOCOL_VERSION: u8 = 2;
 pub const MAX_LINE_BYTES: usize = 2_048;
 pub const MAX_CONTEXT_AGE: Duration = Duration::from_millis(750);
 
@@ -47,11 +47,14 @@ pub struct ContextMessage {
     pub v: u8,
     #[serde(rename = "type")]
     pub message_type: String,
+    #[serde(default)]
     pub decision: String,
     #[serde(default)]
     pub request_id: u64,
     #[serde(default)]
     pub generation: u64,
+    #[serde(default)]
+    pub paused: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,24 +64,39 @@ pub struct ContextUpdate {
     pub generation: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClientUpdate {
+    Context(ContextUpdate),
+    Control { paused: bool },
+}
+
 impl ContextMessage {
-    pub fn parse(line: &[u8]) -> Result<ContextUpdate, String> {
+    pub fn parse(line: &[u8]) -> Result<ClientUpdate, String> {
         if line.len() > MAX_LINE_BYTES {
             return Err("context message is too large".to_owned());
         }
         let message: Self = serde_json::from_slice(line).map_err(|error| error.to_string())?;
-        if message.v != PROTOCOL_VERSION || message.message_type != "context" {
+        if message.v != PROTOCOL_VERSION {
+            return Err("unsupported context protocol version".to_owned());
+        }
+        if message.message_type == "control" {
+            return message
+                .paused
+                .map(|paused| ClientUpdate::Control { paused })
+                .ok_or_else(|| "control message is missing paused".to_owned());
+        }
+        if message.message_type != "context" {
             return Err("unsupported context protocol message".to_owned());
         }
         let decision = message
             .decision
             .parse()
             .map_err(|error: crate::config::ConfigError| error.to_string())?;
-        Ok(ContextUpdate {
+        Ok(ClientUpdate::Context(ContextUpdate {
             decision,
             request_id: message.request_id,
             generation: message.generation,
-        })
+        }))
     }
 }
 
@@ -216,21 +234,34 @@ mod tests {
 
     #[test]
     fn rejects_wrong_protocol_version() {
-        let line = br#"{"v":2,"type":"context","decision":"native"}"#;
+        let line = br#"{"v":1,"type":"context","decision":"native"}"#;
         assert!(ContextMessage::parse(line).is_err());
     }
 
     #[test]
     fn parses_current_protocol() {
-        let line = br#"{"v":1,"type":"context","decision":"scroll","role":"document web"}"#;
+        let line = br#"{"v":2,"type":"context","decision":"scroll","role":"document web"}"#;
         assert_eq!(
             ContextMessage::parse(line).unwrap(),
-            ContextUpdate {
+            ClientUpdate::Context(ContextUpdate {
                 decision: Decision::Scroll,
                 request_id: 0,
                 generation: 0,
-            }
+            })
         );
+    }
+
+    #[test]
+    fn parses_pause_control() {
+        assert_eq!(
+            ContextMessage::parse(br#"{"v":2,"type":"control","paused":true}"#).unwrap(),
+            ClientUpdate::Control { paused: true }
+        );
+    }
+
+    #[test]
+    fn rejects_control_without_boolean_pause() {
+        assert!(ContextMessage::parse(br#"{"v":2,"type":"control","paused":"yes"}"#).is_err());
     }
 
     #[test]

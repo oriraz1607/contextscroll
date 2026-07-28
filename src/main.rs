@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use contextscroll::config::Settings;
-use contextscroll::context::{ContextCache, ContextMessage, ContextUpdate, MAX_LINE_BYTES};
+use contextscroll::context::{
+    ClientUpdate, ContextCache, ContextMessage, MAX_LINE_BYTES, PROTOCOL_VERSION,
+};
 use contextscroll::engine::{Interaction, Route, WheelAccumulator};
 use evdev::uinput::VirtualDevice;
 use evdev::{
@@ -33,9 +35,10 @@ const BUTTON_MAX_EXCLUSIVE: u16 = 0x120;
 const CONTEXT_REFRESH_GRACE: Duration = Duration::from_millis(60);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct CursorOffset {
+struct CursorState {
     x: i32,
     y: i32,
+    direction: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -59,14 +62,15 @@ struct DaemonSignals {
     context_generation: AtomicU64,
     next_refresh_id: AtomicU64,
     refresh_sender: watch::Sender<u64>,
-    cursor_sender: watch::Sender<CursorOffset>,
+    cursor_sender: watch::Sender<CursorState>,
+    paused: AtomicBool,
 }
 
 impl DaemonSignals {
     fn new(
         activity_sender: watch::Sender<ActivityState>,
         refresh_sender: watch::Sender<u64>,
-        cursor_sender: watch::Sender<CursorOffset>,
+        cursor_sender: watch::Sender<CursorState>,
     ) -> Self {
         Self {
             active_devices: AtomicUsize::new(0),
@@ -75,6 +79,7 @@ impl DaemonSignals {
             next_refresh_id: AtomicU64::new(0),
             refresh_sender,
             cursor_sender,
+            paused: AtomicBool::new(false),
         }
     }
 
@@ -102,20 +107,46 @@ impl DaemonSignals {
         }
     }
 
-    fn set_cursor_offset(&self, x: f64, y: f64) {
-        let offset = CursorOffset {
+    fn set_cursor_state(&self, x: f64, y: f64, direction: u8) {
+        let state = CursorState {
             x: x.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32,
             y: y.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32,
+            direction: match direction {
+                1 | 5 => direction,
+                _ => 0,
+            },
         };
-        if *self.cursor_sender.borrow() != offset {
-            self.cursor_sender.send_replace(offset);
+        if *self.cursor_sender.borrow() != state {
+            self.cursor_sender.send_replace(state);
         }
+    }
+
+    fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Release);
+    }
+
+    fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
     }
 
     fn request_refresh(&self) -> u64 {
         let request_id = self.next_refresh_id.fetch_add(1, Ordering::SeqCst) + 1;
         self.refresh_sender.send_replace(request_id);
         request_id
+    }
+}
+
+fn cursor_direction(dy: f64, deadzone: f64) -> u8 {
+    if dy < -deadzone {
+        1
+    } else if dy > deadzone {
+        // Five was "south" in the previous eight-way extension. Retaining
+        // that wire value keeps down pointing down while GNOME Shell still
+        // has the earlier JavaScript loaded, without adding more visual
+        // states to the new two-direction cursor.
+        5
+    } else {
+        0
     }
 }
 
@@ -291,10 +322,29 @@ fn run_mouse(
     let mut last_wheel_debug = previous_tick
         .checked_sub(Duration::from_secs(1))
         .unwrap_or(previous_tick);
+    let mut was_paused = signals.is_paused();
 
     eprintln!("INFO: grabbed {name} at {}", path.display());
     let result: Result<(), AnyError> = (|| {
         while !shutdown.load(Ordering::Relaxed) {
+            let paused = signals.is_paused();
+            if paused != was_paused {
+                if paused {
+                    if announced_active {
+                        if let Some(generation) = signals.stop() {
+                            cache.require_generation(generation);
+                        }
+                        announced_active = false;
+                    }
+                    interaction = Interaction::default();
+                    wheel.clear();
+                }
+                debug(
+                    debug_enabled,
+                    format!("{}: paused={paused}", path.display()),
+                );
+                was_paused = paused;
+            }
             let now = Instant::now();
             let timeout = if interaction.scrolling {
                 next_tick
@@ -314,6 +364,26 @@ fn run_mouse(
                     let event_type = event.event_type();
                     let code = event.code();
                     let value = event.value();
+
+                    if paused {
+                        if event_type == EventType::KEY || event_type == EventType::RELATIVE {
+                            batch.push(event);
+                            if event_type == EventType::KEY && is_button(code) {
+                                if value == 1 {
+                                    held.insert(code);
+                                } else if value == 0 {
+                                    held.remove(&code);
+                                }
+                            }
+                        } else if event_type == EventType::SYNCHRONIZATION
+                            && code == SynchronizationCode::SYN_REPORT.0
+                            && !batch.is_empty()
+                        {
+                            output.emit(&batch)?;
+                            batch.clear();
+                        }
+                        continue;
+                    }
 
                     if event_type == EventType::KEY && is_button(code) {
                         let middle_press = code == KeyCode::BTN_MIDDLE.0 && value == 1;
@@ -369,7 +439,7 @@ fn run_mouse(
                             Route::Consume => {}
                             Route::Start => {
                                 if !announced_active {
-                                    signals.set_cursor_offset(0.0, 0.0);
+                                    signals.set_cursor_state(0.0, 0.0, 0);
                                     signals.start();
                                     announced_active = true;
                                 }
@@ -390,6 +460,36 @@ fn run_mouse(
                                         cache.require_generation(generation);
                                     }
                                     announced_active = false;
+                                }
+                                if middle_press {
+                                    // Shell has just been asked to move the
+                                    // hidden compositor pointer to the visual
+                                    // cursor. Accept this same stopping click
+                                    // only when a post-warp hit test proves
+                                    // that its target has native middle-click
+                                    // behavior (for example, a browser tab or
+                                    // hyperlink). A timeout or unknown target
+                                    // preserves the traditional consumed stop.
+                                    let request_id = signals.request_refresh();
+                                    let stopping_decision = cache.wait_for_request(
+                                        request_id,
+                                        CONTEXT_REFRESH_GRACE,
+                                        contextscroll::context::Decision::Unknown,
+                                    );
+                                    if stopping_decision == contextscroll::context::Decision::Native
+                                        && interaction
+                                            .forward_stopping_press(code, KeyCode::BTN_MIDDLE.0)
+                                    {
+                                        batch.push(event);
+                                        held.insert(code);
+                                    }
+                                    debug(
+                                        debug_enabled,
+                                        format!(
+                                            "{}: stopping middle decision={stopping_decision:?}",
+                                            path.display()
+                                        ),
+                                    );
                                 }
                                 wheel.clear();
                                 previous_tick = Instant::now();
@@ -433,9 +533,10 @@ fn run_mouse(
                         if code == SynchronizationCode::SYN_REPORT.0 {
                             interaction.finish_motion_batch(settings.deadzone_px);
                             if interaction.scrolling {
-                                signals.set_cursor_offset(
+                                signals.set_cursor_state(
                                     interaction.visual_dx,
                                     interaction.visual_dy,
+                                    cursor_direction(interaction.dy, settings.deadzone_px),
                                 );
                             }
                             if !batch.is_empty() {
@@ -528,7 +629,7 @@ fn uid_has_desktop_session(uid: u32) -> bool {
 async fn read_context_message<R>(
     reader: &mut R,
     line: &mut Vec<u8>,
-) -> Result<Option<ContextUpdate>, AnyError>
+) -> Result<Option<ClientUpdate>, AnyError>
 where
     R: AsyncBufRead + Unpin,
 {
@@ -549,28 +650,29 @@ where
         if line.last() != Some(&b'\n') {
             continue;
         }
-        let decision = ContextMessage::parse(line)?;
+        let update = ContextMessage::parse(line)?;
         line.clear();
-        return Ok(Some(decision));
+        return Ok(Some(update));
     }
 }
 
 fn activity_message(state: ActivityState) -> Vec<u8> {
     format!(
-        "{{\"v\":1,\"type\":\"activity\",\"active\":{},\"generation\":{}}}\n",
-        state.active, state.generation
+        "{{\"v\":{PROTOCOL_VERSION},\"type\":\"activity\",\"active\":{},\"generation\":{}}}\n",
+        state.active, state.generation,
     )
     .into_bytes()
 }
 
 fn refresh_message(request_id: u64) -> Vec<u8> {
-    format!("{{\"v\":1,\"type\":\"refresh\",\"request_id\":{request_id}}}\n").into_bytes()
+    format!("{{\"v\":{PROTOCOL_VERSION},\"type\":\"refresh\",\"request_id\":{request_id}}}\n")
+        .into_bytes()
 }
 
-fn cursor_message(offset: CursorOffset) -> Vec<u8> {
+fn cursor_message(state: CursorState) -> Vec<u8> {
     format!(
-        "{{\"v\":1,\"type\":\"cursor\",\"x\":{},\"y\":{}}}\n",
-        offset.x, offset.y
+        "{{\"v\":{PROTOCOL_VERSION},\"type\":\"cursor\",\"x\":{},\"y\":{},\"direction\":{}}}\n",
+        state.x, state.y, state.direction,
     )
     .into_bytes()
 }
@@ -578,9 +680,10 @@ fn cursor_message(offset: CursorOffset) -> Vec<u8> {
 async fn handle_context_client(
     stream: UnixStream,
     cache: Arc<ContextCache>,
+    signals: Arc<DaemonSignals>,
     mut activity: watch::Receiver<ActivityState>,
     mut refresh_requests: watch::Receiver<u64>,
-    mut cursor: watch::Receiver<CursorOffset>,
+    mut cursor: watch::Receiver<CursorState>,
     debug_enabled: bool,
 ) -> Result<(), AnyError> {
     let credentials = stream.peer_cred()?;
@@ -636,14 +739,22 @@ async fn handle_context_client(
                 let Some(update) = message? else {
                     break;
                 };
-                cache.update(update);
-                debug(
-                    debug_enabled,
-                    format!(
-                        "context updated to {:?} request={}",
-                        update.decision, update.request_id
-                    ),
-                );
+                match update {
+                    ClientUpdate::Context(context) => {
+                        cache.update(context);
+                        debug(
+                            debug_enabled,
+                            format!(
+                                "context updated to {:?} request={}",
+                                context.decision, context.request_id
+                            ),
+                        );
+                    }
+                    ClientUpdate::Control { paused } => {
+                        signals.set_paused(paused);
+                        debug(debug_enabled, format!("pause control updated to {paused}"));
+                    }
+                }
             }
         }
     }
@@ -653,9 +764,10 @@ async fn handle_context_client(
 async fn context_server(
     path: PathBuf,
     cache: Arc<ContextCache>,
+    signals: Arc<DaemonSignals>,
     activity: watch::Receiver<ActivityState>,
     refresh_requests: watch::Receiver<u64>,
-    cursor: watch::Receiver<CursorOffset>,
+    cursor: watch::Receiver<CursorState>,
     debug_enabled: bool,
 ) -> Result<(), AnyError> {
     if let Some(parent) = path.parent() {
@@ -672,6 +784,7 @@ async fn context_server(
     loop {
         let (stream, _) = listener.accept().await?;
         let client_cache = Arc::clone(&cache);
+        let client_signals = Arc::clone(&signals);
         let client_activity = activity.clone();
         let client_refresh_requests = refresh_requests.clone();
         let client_cursor = cursor.clone();
@@ -679,6 +792,7 @@ async fn context_server(
             if let Err(error) = handle_context_client(
                 stream,
                 client_cache,
+                client_signals,
                 client_activity,
                 client_refresh_requests,
                 client_cursor,
@@ -722,7 +836,7 @@ async fn run(arguments: Arguments) -> Result<(), AnyError> {
     let cache = Arc::new(ContextCache::new());
     let (activity_sender, activity_receiver) = watch::channel(ActivityState::default());
     let (refresh_sender, refresh_receiver) = watch::channel(0);
-    let (cursor_sender, cursor_receiver) = watch::channel(CursorOffset::default());
+    let (cursor_sender, cursor_receiver) = watch::channel(CursorState::default());
     let signals = Arc::new(DaemonSignals::new(
         activity_sender,
         refresh_sender,
@@ -732,6 +846,7 @@ async fn run(arguments: Arguments) -> Result<(), AnyError> {
     let socket_task = tokio::spawn(context_server(
         PathBuf::from(&settings.socket_path),
         Arc::clone(&cache),
+        Arc::clone(&signals),
         activity_receiver,
         refresh_receiver,
         cursor_receiver,
@@ -817,7 +932,7 @@ mod tests {
     fn activity_tracks_multiple_mice() {
         let (sender, receiver) = watch::channel(ActivityState::default());
         let (refresh_sender, _refresh_receiver) = watch::channel(0);
-        let (cursor_sender, _cursor_receiver) = watch::channel(CursorOffset::default());
+        let (cursor_sender, _cursor_receiver) = watch::channel(CursorState::default());
         let signals = DaemonSignals::new(sender, refresh_sender, cursor_sender);
         signals.start();
         assert!(receiver.borrow().active);
@@ -841,7 +956,7 @@ mod tests {
                 active: true,
                 generation: 7
             }),
-            b"{\"v\":1,\"type\":\"activity\",\"active\":true,\"generation\":7}\n"
+            b"{\"v\":2,\"type\":\"activity\",\"active\":true,\"generation\":7}\n"
         );
         assert!(
             activity_message(ActivityState {
@@ -857,7 +972,7 @@ mod tests {
     fn refresh_protocol_is_bounded_json() {
         assert_eq!(
             refresh_message(42),
-            b"{\"v\":1,\"type\":\"refresh\",\"request_id\":42}\n"
+            b"{\"v\":2,\"type\":\"refresh\",\"request_id\":42}\n"
         );
         assert!(refresh_message(u64::MAX).len() < MAX_LINE_BYTES);
     }
@@ -865,13 +980,18 @@ mod tests {
     #[test]
     fn cursor_protocol_is_bounded_json() {
         assert_eq!(
-            cursor_message(CursorOffset { x: -42, y: 71 }),
-            b"{\"v\":1,\"type\":\"cursor\",\"x\":-42,\"y\":71}\n"
+            cursor_message(CursorState {
+                x: -42,
+                y: 71,
+                direction: 5,
+            }),
+            b"{\"v\":2,\"type\":\"cursor\",\"x\":-42,\"y\":71,\"direction\":5}\n"
         );
         assert!(
-            cursor_message(CursorOffset {
+            cursor_message(CursorState {
                 x: i32::MIN,
-                y: i32::MAX
+                y: i32::MAX,
+                direction: 0,
             })
             .len()
                 < MAX_LINE_BYTES
@@ -882,28 +1002,65 @@ mod tests {
     fn cursor_offset_is_published_for_the_session_helper() {
         let (activity_sender, _activity_receiver) = watch::channel(ActivityState::default());
         let (refresh_sender, _refresh_receiver) = watch::channel(0);
-        let (cursor_sender, cursor_receiver) = watch::channel(CursorOffset::default());
+        let (cursor_sender, cursor_receiver) = watch::channel(CursorState::default());
         let signals = DaemonSignals::new(activity_sender, refresh_sender, cursor_sender);
 
         signals.start();
-        signals.set_cursor_offset(12.4, -9.7);
-        assert_eq!(*cursor_receiver.borrow(), CursorOffset { x: 12, y: -10 });
+        signals.set_cursor_state(12.4, -9.7, 5);
+        assert_eq!(
+            *cursor_receiver.borrow(),
+            CursorState {
+                x: 12,
+                y: -10,
+                direction: 5,
+            }
+        );
         signals.stop();
         // Preserve the visual position until Shell has moved the hidden
         // compositor pointer there while deactivating the replacement.
-        assert_eq!(*cursor_receiver.borrow(), CursorOffset { x: 12, y: -10 });
+        assert_eq!(
+            *cursor_receiver.borrow(),
+            CursorState {
+                x: 12,
+                y: -10,
+                direction: 5,
+            }
+        );
     }
 
     #[test]
     fn refresh_requests_are_monotonic() {
         let (activity_sender, _activity_receiver) = watch::channel(ActivityState::default());
         let (refresh_sender, refresh_receiver) = watch::channel(0);
-        let (cursor_sender, _cursor_receiver) = watch::channel(CursorOffset::default());
+        let (cursor_sender, _cursor_receiver) = watch::channel(CursorState::default());
         let signals = DaemonSignals::new(activity_sender, refresh_sender, cursor_sender);
 
         assert_eq!(signals.request_refresh(), 1);
         assert_eq!(*refresh_receiver.borrow(), 1);
         assert_eq!(signals.request_refresh(), 2);
         assert_eq!(*refresh_receiver.borrow(), 2);
+    }
+
+    #[test]
+    fn pause_state_is_lock_free_and_shared() {
+        let (activity_sender, _activity_receiver) = watch::channel(ActivityState::default());
+        let (refresh_sender, _refresh_receiver) = watch::channel(0);
+        let (cursor_sender, _cursor_receiver) = watch::channel(CursorState::default());
+        let signals = DaemonSignals::new(activity_sender, refresh_sender, cursor_sender);
+        assert!(!signals.is_paused());
+        signals.set_paused(true);
+        assert!(signals.is_paused());
+        signals.set_paused(false);
+        assert!(!signals.is_paused());
+    }
+
+    #[test]
+    fn cursor_direction_reports_only_vertical_scroll_direction() {
+        let deadzone = 10.0;
+        assert_eq!(cursor_direction(-20.0, deadzone), 1);
+        assert_eq!(cursor_direction(20.0, deadzone), 5);
+        assert_eq!(cursor_direction(-10.0, deadzone), 0);
+        assert_eq!(cursor_direction(10.0, deadzone), 0);
+        assert_eq!(cursor_direction(0.0, deadzone), 0);
     }
 }

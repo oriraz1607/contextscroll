@@ -25,6 +25,7 @@ from .classifier import (
     classify_chain,
     is_browser_application,
     normalize,
+    parse_context_rules,
 )
 from .pointer import GnomeShellPointer, PointerUnavailable, X11Pointer
 from .protocol import (
@@ -35,6 +36,7 @@ from .protocol import (
     RefreshReport,
     decode_daemon,
     encode,
+    encode_control,
 )
 
 log = logging.getLogger("contextscroll.context")
@@ -48,10 +50,6 @@ UNKNOWN_RETRY_MAX_SECONDS = 1.0
 POINTER_SAMPLE_MILLISECONDS = 8
 MAX_ANCESTORS = 32
 MAX_DESCENT = 24
-MAX_LINK_CONTAINER_ANCESTORS = 8
-MAX_LINK_DESCENDANTS = 64
-MAX_LINK_DESCENT = 6
-MAX_LINK_CONTAINER_AREA_RATIO = 0.35
 POINT_LINK_ROOT_ANCESTOR = 4
 MAX_POINT_LINK_DESCENDANTS = 128
 MAX_POINT_LINK_DESCENT = 8
@@ -148,26 +146,28 @@ class LatestPoint:
         self,
         x: int,
         y: int,
-        window_x: int = 0,
-        window_y: int = 0,
-        window_width: int = 0,
-        window_height: int = 0,
-        window_pid: int = 0,
-        window_title: str = "",
+        window_x: int | None = None,
+        window_y: int | None = None,
+        window_width: int | None = None,
+        window_height: int | None = None,
+        window_pid: int | None = None,
+        window_title: str | None = None,
     ) -> None:
         if not (-1_000_000 <= x <= 1_000_000):
             return
         if not (-1_000_000 <= y <= 1_000_000):
             return
         with self.condition:
-            window = (
-                window_x,
-                window_y,
-                window_width,
-                window_height,
-                window_pid,
-                window_title,
-            )
+            window = None
+            if window_x is not None:
+                window = (
+                    window_x,
+                    window_y or 0,
+                    window_width or 0,
+                    window_height or 0,
+                    window_pid or 0,
+                    window_title or "",
+                )
             if self.x == x and self.y == y and self.window == window:
                 return
             self.x = x
@@ -196,7 +196,10 @@ class AccessibilityTree:
     def __init__(self, atspi):
         self.atspi = atspi
         self.last_top_level = None
-        self.last_descent = []
+        self.rules = ()
+
+    def set_rules(self, rules) -> None:
+        self.rules = tuple(rules)
 
     def _states(self, accessible) -> set[str]:
         result: set[str] = set()
@@ -288,30 +291,6 @@ class AccessibilityTree:
             return True
         return "link" in attributes.get("xml roles", "").split()
 
-    def _has_hyperlink_descendant(self, accessible) -> bool:
-        queue = [
-            (child, 1)
-            for child in self._children(
-                accessible, maximum=MAX_LINK_DESCENDANTS
-            )
-        ]
-        visited = 0
-        while queue and visited < MAX_LINK_DESCENDANTS:
-            candidate, depth = queue.pop(0)
-            visited += 1
-            if self._is_hyperlink(candidate):
-                return True
-            if depth < MAX_LINK_DESCENT:
-                remaining = MAX_LINK_DESCENDANTS - visited - len(queue)
-                if remaining > 0:
-                    queue.extend(
-                        (child, depth + 1)
-                        for child in self._children(
-                            candidate, maximum=remaining
-                        )
-                    )
-        return False
-
     def _has_hyperlink_at_point(
         self, accessible, x: int, y: int
     ) -> bool:
@@ -320,11 +299,9 @@ class AccessibilityTree:
         while queue and visited < MAX_POINT_LINK_DESCENDANTS:
             candidate, depth = queue.pop(0)
             visited += 1
-            try:
-                role = normalize(candidate.get_role_name() or "")
-            except Exception:
-                role = ""
-            if role == "link" and self._contains(candidate, x, y):
+            if self._is_hyperlink(candidate) and self._contains(
+                candidate, x, y
+            ):
                 return True
             if depth < MAX_POINT_LINK_DESCENT:
                 remaining = (
@@ -364,51 +341,6 @@ class AccessibilityTree:
             accessibles[root_index], x, y
         ):
             nodes[0] = replace(nodes[0], hyperlink_target=True)
-
-    def _is_compact_link_container(
-        self, accessible, top_level
-    ) -> bool:
-        try:
-            container = accessible.get_component_iface().get_extents(
-                self.atspi.CoordType.SCREEN
-            )
-            window = top_level.get_component_iface().get_extents(
-                self.atspi.CoordType.SCREEN
-            )
-        except Exception:
-            return False
-        container_area = container.width * container.height
-        window_area = window.width * window.height
-        return (
-            container_area > 0
-            and window_area > 0
-            and container_area
-            <= window_area * MAX_LINK_CONTAINER_AREA_RATIO
-        )
-
-    def _mark_linked_click_target(
-        self,
-        accessibles,
-        nodes: list[SemanticNode],
-        application: str,
-        top_level,
-    ) -> None:
-        if not is_browser_application(application):
-            return
-        for index, (accessible, node) in enumerate(
-            zip(accessibles, nodes, strict=False)
-        ):
-            if index >= MAX_LINK_CONTAINER_ANCESTORS:
-                break
-            if "click" not in node.actions:
-                continue
-            if not self._is_compact_link_container(
-                accessible, top_level
-            ):
-                continue
-            if self._has_hyperlink_descendant(accessible):
-                nodes[index] = replace(node, hyperlink_target=True)
-                return
 
     def _contains(self, accessible, x: int, y: int) -> bool:
         try:
@@ -638,26 +570,25 @@ class AccessibilityTree:
 
     def _deepest(self, accessible, x: int, y: int):
         current = accessible
-        path = [current]
-        if self.last_descent and self.last_descent[0] == accessible:
-            for index in range(len(self.last_descent) - 1, 0, -1):
-                candidate = self.last_descent[index]
-                if self._showing(candidate) and self._contains(
-                    candidate, x, y
-                ):
-                    current = candidate
-                    path = self.last_descent[: index + 1]
-                    break
+        # Always begin hit-testing at the window root. Chromium web documents
+        # can report extents that overlap browser chrome, so containment alone
+        # cannot prove that a cached page descendant still owns a point after
+        # the pointer enters the tab strip.
         for _ in range(MAX_DESCENT):
             child = self._child_at(current, x, y)
             if child is None:
                 break
             current = child
-            path.append(current)
-        self.last_descent = path
         return current
 
     def chain_at(self, x: int, y: int, window=None):
+        if window is not None and (window[2] <= 0 or window[3] <= 0):
+            # GNOME's compositor snapshot is authoritative. On the desktop,
+            # overview, or other Shell chrome there is no application window
+            # to classify. Falling through to coordinate-only AT-SPI lookup
+            # can select a stale or obscured application and incorrectly
+            # enable autoscroll on the desktop.
+            return [], ""
         desktop = self.atspi.get_desktop(0)
         if desktop is None:
             return [], ""
@@ -706,9 +637,6 @@ class AccessibilityTree:
             x,
             y,
         )
-        self._mark_linked_click_target(
-            accessibles, nodes, application_name, top_level
-        )
         return nodes, application_name
 
     def report_at(self, x: int, y: int, window=None) -> ContextReport:
@@ -717,7 +645,7 @@ class AccessibilityTree:
         except Exception as error:
             log.debug("AT-SPI lookup failed at %d,%d: %r", x, y, error)
             return ContextReport(Decision.UNKNOWN, x=x, y=y)
-        decision = classify_chain(chain, application)
+        decision = classify_chain(chain, application, self.rules)
         deepest = chain[0] if chain else None
         return ContextReport(
             decision=decision,
@@ -787,6 +715,9 @@ class ContextWorker(threading.Thread):
         self.cursor_callback = None
         self.pending_request_id = 0
         self.context_generation = 0
+        self.paused = False
+        self.control_dirty = True
+        self.control_lock = threading.Lock()
 
     def set_active_callback(self, callback) -> None:
         self.active_callback = callback
@@ -796,6 +727,15 @@ class ContextWorker(threading.Thread):
 
     def set_cursor_callback(self, callback) -> None:
         self.cursor_callback = callback
+
+    def set_paused(self, paused: bool) -> None:
+        with self.control_lock:
+            paused = bool(paused)
+            if paused == self.paused and not self.control_dirty:
+                return
+            self.paused = paused
+            self.control_dirty = True
+        self.points.refresh()
 
     def _set_active(self, active: bool, generation: int) -> None:
         if active == self.active and generation <= self.context_generation:
@@ -820,6 +760,8 @@ class ContextWorker(threading.Thread):
                 pass
         self.connection = None
         self.receive_buffer.clear()
+        with self.control_lock:
+            self.control_dirty = True
         self._set_active(False, self.context_generation)
 
     def _connect(self) -> bool:
@@ -835,20 +777,37 @@ class ContextWorker(threading.Thread):
         candidate.settimeout(None)
         self.connection = candidate
         self.receive_buffer.clear()
+        with self.control_lock:
+            self.control_dirty = True
         log.info("connected to %s", self.socket_path)
         return True
 
     def _send(self) -> None:
-        if not self._connect():
+        self._send_control()
+        if self.connection is None:
             return
         try:
             self.connection.sendall(encode(self.last_report))
         except OSError:
             self._disconnect()
 
-    def _receive_activity(self) -> None:
-        if self.connection is None:
+    def _send_control(self) -> None:
+        if not self._connect():
             return
+        try:
+            with self.control_lock:
+                paused = self.paused
+                send_control = self.control_dirty
+                self.control_dirty = False
+            if send_control:
+                self.connection.sendall(encode_control(paused))
+        except OSError:
+            self._disconnect()
+
+    def _receive_activity(self) -> bool:
+        refreshed = False
+        if self.connection is None:
+            return refreshed
         while True:
             try:
                 data = self.connection.recv(512, socket.MSG_DONTWAIT)
@@ -866,13 +825,13 @@ class ContextWorker(threading.Thread):
                 self.receive_buffer = bytearray(remainder)
                 if len(line) + 1 > MAX_LINE_BYTES:
                     self._disconnect()
-                    return
+                    return refreshed
                 try:
                     report = decode_daemon(line + b"\n")
                 except ValueError as error:
                     log.warning("invalid daemon message: %s", error)
                     self._disconnect()
-                    return
+                    return refreshed
                 if isinstance(report, ActivityReport):
                     self._set_active(report.active, report.generation)
                 elif isinstance(report, RefreshReport):
@@ -884,10 +843,15 @@ class ContextWorker(threading.Thread):
                         self.points.refresh()
                     else:
                         self.refresh_callback()
+                    refreshed = True
                 elif isinstance(report, CursorReport):
                     if self.cursor_callback is not None:
                         try:
-                            self.cursor_callback(report.x, report.y)
+                            self.cursor_callback(
+                                report.x,
+                                report.y,
+                                report.direction,
+                            )
                         except Exception as error:
                             log.warning(
                                 "could not update autoscroll cursor: %s",
@@ -896,6 +860,12 @@ class ContextWorker(threading.Thread):
             if len(self.receive_buffer) > MAX_LINE_BYTES:
                 self._disconnect()
                 break
+        return refreshed
+
+    def _query_delay(self, now: float, last_query: float) -> float:
+        if self.pending_request_id > self.last_report.request_id:
+            return 0.0
+        return max(0.0, MIN_QUERY_INTERVAL - (now - last_query))
 
     def run(self) -> None:
         generation = -1
@@ -907,7 +877,15 @@ class ContextWorker(threading.Thread):
             x, y, current_generation, window = self.points.wait(
                 generation, STATE_POLL_SECONDS
             )
-            self._receive_activity()
+            if self._receive_activity():
+                # A click-time refresh callback has synchronously sampled the
+                # compositor pointer. Replace the point captured before the
+                # socket read so this iteration classifies that fresh sample.
+                x, y, current_generation, window = self.points.wait(
+                    current_generation, 0
+                )
+            # Pause/resume must not wait behind an accessibility traversal.
+            self._send_control()
             now = time.monotonic()
             changed = current_generation != generation
             if changed and (x is None or y is None):
@@ -926,7 +904,7 @@ class ContextWorker(threading.Thread):
                 and x is not None
                 and y is not None
             ):
-                remaining = MIN_QUERY_INTERVAL - (now - last_query)
+                remaining = self._query_delay(now, last_query)
                 if remaining > 0 and self.stop_event.wait(remaining):
                     break
                 # Movement may have continued while throttling. Classify the
@@ -1048,11 +1026,33 @@ def main(argv=None) -> int:
 
     points = LatestPoint()
     stop = threading.Event()
+    settings = gio.Settings.new("org.contextscroll")
+
+    def load_rules():
+        rules, errors = parse_context_rules(
+            settings.get_string("rules-json")
+        )
+        tree.set_rules(rules)
+        for error in errors:
+            log.warning("ignored context rule: %s", error)
+        log.info("loaded %d user context rules", len(rules))
+
+    load_rules()
     worker = ContextWorker(
         MainThreadAccessibility(tree, glib, stop),
         points,
         args.socket,
         stop,
+    )
+    worker.set_paused(settings.get_boolean("paused"))
+    settings_handler = settings.connect(
+        "changed::rules-json", lambda *_args: load_rules()
+    )
+    paused_handler = settings.connect(
+        "changed::paused",
+        lambda current, _key: worker.set_paused(
+            current.get_boolean("paused")
+        ),
     )
     worker.start()
     loop = glib.MainLoop()
@@ -1100,10 +1100,10 @@ def main(argv=None) -> int:
         # context generation.
         worker.set_active_callback(update_indicator)
 
-        def update_cursor(x, y):
+        def update_cursor(x, y, direction):
             def apply_cursor():
                 if pointer is not None:
-                    pointer.set_indicator_offset(x, y)
+                    pointer.set_indicator_state(x, y, direction)
                 return glib.SOURCE_REMOVE
 
             glib.idle_add(
@@ -1114,16 +1114,24 @@ def main(argv=None) -> int:
         worker.set_cursor_callback(update_cursor)
 
         def refresh_pointer_context():
+            completed = threading.Event()
+
             def apply_refresh():
-                if pointer is not None:
-                    points.update(*pointer.position())
-                    points.refresh()
+                try:
+                    if pointer is not None:
+                        points.update(*pointer.refresh_position())
+                        points.refresh()
+                finally:
+                    completed.set()
                 return glib.SOURCE_REMOVE
 
             glib.idle_add(
                 apply_refresh,
                 priority=glib.PRIORITY_HIGH,
             )
+            while not completed.wait(STATE_POLL_SECONDS):
+                if stop.is_set():
+                    return
 
         worker.set_refresh_callback(refresh_pointer_context)
         points.update(*pointer.position())
@@ -1150,15 +1158,23 @@ def main(argv=None) -> int:
         )
 
         def refresh_pointer_context():
+            completed = threading.Event()
+
             def apply_refresh():
-                sample_pointer()
-                points.refresh()
+                try:
+                    sample_pointer()
+                    points.refresh()
+                finally:
+                    completed.set()
                 return glib.SOURCE_REMOVE
 
             glib.idle_add(
                 apply_refresh,
                 priority=glib.PRIORITY_HIGH,
             )
+            while not completed.wait(STATE_POLL_SECONDS):
+                if stop.is_set():
+                    return
 
         worker.set_refresh_callback(refresh_pointer_context)
         sample_pointer()
@@ -1185,6 +1201,8 @@ def main(argv=None) -> int:
         if pointer_source is not None:
             glib.source_remove(pointer_source)
         worker.join(timeout=2.0)
+        settings.disconnect(settings_handler)
+        settings.disconnect(paused_handler)
         if pointer is not None:
             pointer.close()
         # Process teardown releases libatspi. Explicit atspi.exit() has caused

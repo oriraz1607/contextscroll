@@ -6,10 +6,12 @@ import St from 'gi://St';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {getPointerWatcher} from 'resource:///org/gnome/shell/ui/pointerWatcher.js';
+import * as QuickSettings from 'resource:///org/gnome/shell/ui/quickSettings.js';
 
 const BUS_NAME = 'org.contextscroll.Pointer';
 const OBJECT_PATH = '/org/contextscroll/Pointer';
 const SAMPLE_MILLISECONDS = 16;
+const CURSOR_SIZE = 24;
 const INTERFACE_XML = `
 <node>
   <interface name="org.contextscroll.Pointer">
@@ -34,6 +36,11 @@ const INTERFACE_XML = `
       <arg type="i" name="x" direction="in"/>
       <arg type="i" name="y" direction="in"/>
     </method>
+    <method name="SetIndicatorState">
+      <arg type="i" name="x" direction="in"/>
+      <arg type="i" name="y" direction="in"/>
+      <arg type="u" name="direction" direction="in"/>
+    </method>
     <signal name="ContextChanged">
       <arg type="i" name="x"/>
       <arg type="i" name="y"/>
@@ -55,22 +62,28 @@ export default class ContextScrollPointerExtension extends Extension {
         this._indicatorActive = false;
         this._cursorOffsetX = 0;
         this._cursorOffsetY = 0;
+        this._cursorDirection = 0;
         this._visualX = this._x;
         this._visualY = this._y;
         this._cursorHidden = false;
         this._focusInhibited = false;
         this._cursorRevealId = 0;
+        this._neutralCursor = Gio.Icon.new_for_string(
+            `${this.path}/autoscroll-cursor.svg`
+        );
+        this._directionCursor = Gio.Icon.new_for_string(
+            `${this.path}/autoscroll-direction.svg`
+        );
         this._cursorIcon = new St.Icon({
             reactive: false,
             can_focus: false,
             track_hover: false,
-            icon_size: 28,
-            width: 28,
-            height: 28,
-            gicon: Gio.Icon.new_for_string(
-                `${this.path}/autoscroll-cursor.svg`
-            ),
+            icon_size: CURSOR_SIZE,
+            width: CURSOR_SIZE,
+            height: CURSOR_SIZE,
+            gicon: this._neutralCursor,
         });
+        this._cursorIcon.set_pivot_point(0.5, 0.5);
         this._cursorIcon.hide();
         // A non-reactive top-chrome actor stays above application windows
         // without participating in pointer picking.
@@ -91,6 +104,32 @@ export default class ContextScrollPointerExtension extends Extension {
             SAMPLE_MILLISECONDS,
             (x, y) => this._update(x, y)
         );
+        this._settings = this.getSettings();
+        this._directionSettingsId = this._settings.connect(
+            'changed::direction-aware-cursor',
+            () => this._updateCursorDirection()
+        );
+        this._pausedSettingsId = this._settings.connect(
+            'changed::paused',
+            () => this._updateQuickToggle()
+        );
+        this._quickToggle = new QuickSettings.QuickToggle({
+            title: 'ContextScroll',
+            iconName: 'input-mouse-symbolic',
+            toggleMode: true,
+        });
+        this._quickToggleId = this._quickToggle.connect('clicked', () => {
+            this._settings.set_boolean(
+                'paused',
+                !this._quickToggle.checked
+            );
+        });
+        this._quickIndicator = new QuickSettings.SystemIndicator();
+        this._quickIndicator.quickSettingsItems.push(this._quickToggle);
+        Main.panel.statusArea.quickSettings.addExternalIndicator(
+            this._quickIndicator
+        );
+        this._updateQuickToggle();
     }
 
     disable() {
@@ -103,6 +142,8 @@ export default class ContextScrollPointerExtension extends Extension {
             Main.layoutManager.removeChrome(this._cursorIcon);
         this._cursorIcon?.destroy();
         this._cursorIcon = null;
+        this._neutralCursor = null;
+        this._directionCursor = null;
         this._cursorTracker = null;
         this._seat = null;
         this._watch?.remove();
@@ -114,6 +155,22 @@ export default class ContextScrollPointerExtension extends Extension {
         }
         this._dbus?.unexport();
         this._dbus = null;
+        if (this._quickToggleId)
+            this._quickToggle?.disconnect(this._quickToggleId);
+        this._quickToggleId = 0;
+        this._quickIndicator?.quickSettingsItems.forEach(
+            item => item.destroy()
+        );
+        this._quickIndicator?.destroy();
+        this._quickIndicator = null;
+        this._quickToggle = null;
+        if (this._directionSettingsId)
+            this._settings?.disconnect(this._directionSettingsId);
+        if (this._pausedSettingsId)
+            this._settings?.disconnect(this._pausedSettingsId);
+        this._directionSettingsId = 0;
+        this._pausedSettingsId = 0;
+        this._settings = null;
     }
 
     GetPosition() {
@@ -135,6 +192,45 @@ export default class ContextScrollPointerExtension extends Extension {
             this._moveCursorIcon();
     }
 
+    SetIndicatorState(x, y, direction) {
+        this._cursorOffsetX = x;
+        this._cursorOffsetY = y;
+        this._cursorDirection = [0, 1, 5].includes(direction)
+            ? direction
+            : 0;
+        this._updateCursorDirection();
+        if (this._indicatorActive)
+            this._moveCursorIcon();
+    }
+
+    _updateQuickToggle() {
+        if (!this._quickToggle || !this._settings)
+            return;
+        const paused = this._settings.get_boolean('paused');
+        this._quickToggle.checked = !paused;
+        this._quickToggle.subtitle = paused ? 'Paused' : 'Active';
+    }
+
+    _updateCursorDirection() {
+        if (!this._cursorIcon || !this._settings)
+            return;
+        const directional = this._settings.get_boolean(
+            'direction-aware-cursor'
+        );
+        if (!directional || this._cursorDirection === 0) {
+            this._cursorIcon.gicon = this._neutralCursor;
+            this._cursorIcon.set_rotation_angle(
+                Clutter.RotateAxis.Z_AXIS, 0
+            );
+            return;
+        }
+        this._cursorIcon.gicon = this._directionCursor;
+        this._cursorIcon.set_rotation_angle(
+            Clutter.RotateAxis.Z_AXIS,
+            this._cursorDirection === 1 ? 0 : 180
+        );
+    }
+
     _setCursorActive(active) {
         if (!this._cursorIcon || !this._cursorTracker || !this._seat)
             return;
@@ -151,6 +247,8 @@ export default class ContextScrollPointerExtension extends Extension {
             this._y = this._visualY;
             this._cursorOffsetX = 0;
             this._cursorOffsetY = 0;
+            this._cursorDirection = 0;
+            this._updateCursorDirection();
             this._cursorIcon.hide();
             if (this._focusInhibited) {
                 this._seat.uninhibit_unfocus();
@@ -164,6 +262,8 @@ export default class ContextScrollPointerExtension extends Extension {
         }
         this._cursorOffsetX = 0;
         this._cursorOffsetY = 0;
+        this._cursorDirection = 0;
+        this._updateCursorDirection();
         this._moveCursorIcon();
         this._cursorIcon.opacity = 255;
         this._cursorIcon.show();
@@ -192,7 +292,7 @@ export default class ContextScrollPointerExtension extends Extension {
     }
 
     _moveCursorIcon() {
-        const halfSize = 14;
+        const halfSize = CURSOR_SIZE / 2;
         this._visualX = Math.max(
             halfSize,
             Math.min(global.stage.width - halfSize, this._x + this._cursorOffsetX)

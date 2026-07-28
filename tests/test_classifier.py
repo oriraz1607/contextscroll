@@ -1,6 +1,15 @@
+import json
 import unittest
 
-from contextscroll.classifier import Decision, SemanticNode, classify_chain
+from contextscroll.classifier import (
+    MAX_RULES,
+    MAX_RULES_BYTES,
+    Decision,
+    SemanticNode,
+    classify_chain,
+    matching_rule,
+    parse_context_rules,
+)
 
 
 class ClassifierTests(unittest.TestCase):
@@ -124,6 +133,43 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(
             classify_chain(chain, "Google Chrome"),
             Decision.NATIVE,
+        )
+
+    def test_chromium_plain_file_viewer_cell_is_scroll(self):
+        chain = [
+            self.node("text", states=["selectable"]),
+            self.node("table cell"),
+            self.node("table"),
+            self.node("document web"),
+        ]
+        self.assertEqual(
+            classify_chain(chain, "Brave Browser"),
+            Decision.SCROLL,
+        )
+
+    def test_chromium_file_viewer_link_remains_native(self):
+        chain = [
+            self.node("text"),
+            self.node("link", actions=["jump"]),
+            self.node("table cell"),
+            self.node("table"),
+            self.node("document web"),
+        ]
+        self.assertEqual(
+            classify_chain(chain, "Google Chrome"),
+            Decision.NATIVE,
+        )
+
+    def test_chromium_plain_list_item_is_scroll(self):
+        chain = [
+            self.node("text", states=["selectable"]),
+            self.node("list item"),
+            self.node("list"),
+            self.node("document web"),
+        ]
+        self.assertEqual(
+            classify_chain(chain, "Chromium"),
+            Decision.SCROLL,
         )
 
     def test_chromium_video_action_is_scroll(self):
@@ -366,6 +412,117 @@ class ClassifierTests(unittest.TestCase):
             ),
             Decision.UNKNOWN,
         )
+
+    def test_first_matching_user_rule_overrides_protected_target(self):
+        rules, errors = parse_context_rules(
+            json.dumps(
+                [
+                    {
+                        "application": "firefox",
+                        "role": "link",
+                        "decision": "scroll",
+                        "enabled": True,
+                    },
+                    {
+                        "application": "firefox",
+                        "role": "link",
+                        "decision": "native",
+                        "enabled": True,
+                    },
+                ]
+            )
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            classify_chain(
+                [self.node("link", name="Example")],
+                "Mozilla Firefox",
+                rules,
+            ),
+            Decision.SCROLL,
+        )
+
+    def test_rule_matchers_apply_to_one_semantic_node(self):
+        rules, errors = parse_context_rules(
+            json.dumps(
+                [
+                    {
+                        "role": "button",
+                        "states": ["enabled"],
+                        "actions": ["press"],
+                        "name": "download",
+                        "decision": "native",
+                    }
+                ]
+            )
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            classify_chain(
+                [
+                    self.node("text", name="Download"),
+                    self.node(
+                        "button",
+                        states=["enabled"],
+                        actions=["press"],
+                        name="Download file",
+                    ),
+                ],
+                rules=rules,
+            ),
+            Decision.NATIVE,
+        )
+        self.assertIsNone(
+            matching_rule(
+                [
+                    self.node("text", name="Download"),
+                    self.node(
+                        "button",
+                        states=["enabled"],
+                        actions=["press"],
+                        name="Save",
+                    ),
+                ],
+                "",
+                rules,
+            )
+        )
+
+    def test_invalid_rules_are_skipped_individually(self):
+        rules, errors = parse_context_rules(
+            json.dumps(
+                [
+                    {"decision": "scroll"},
+                    {
+                        "application": "Brave",
+                        "decision": "native",
+                    },
+                    {"role": 7, "decision": "scroll"},
+                ]
+            )
+        )
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0].application, "brave")
+        self.assertEqual(len(errors), 2)
+
+    def test_rule_count_is_bounded(self):
+        rules, errors = parse_context_rules(
+            json.dumps(
+                [
+                    {"application": f"app {index}", "decision": "native"}
+                    for index in range(MAX_RULES + 2)
+                ]
+            )
+        )
+        self.assertEqual(len(rules), MAX_RULES)
+        self.assertTrue(errors)
+
+    def test_oversized_rules_document_is_rejected(self):
+        rules, errors = parse_context_rules(
+            " " * (MAX_RULES_BYTES + 1)
+        )
+        self.assertEqual(rules, ())
+        self.assertTrue(errors)
 
 
 if __name__ == "__main__":

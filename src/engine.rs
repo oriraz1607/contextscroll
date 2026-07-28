@@ -61,6 +61,17 @@ impl Interaction {
         self.visual_dy = 0.0;
     }
 
+    pub fn forward_stopping_press(&mut self, code: u16, middle_code: u16) -> bool {
+        if self.consumed_release != Some(code) {
+            return false;
+        }
+        self.consumed_release = None;
+        if code == middle_code {
+            self.native_middle_down = true;
+        }
+        true
+    }
+
     pub fn button(
         &mut self,
         code: u16,
@@ -118,6 +129,12 @@ impl Interaction {
         if is_release {
             if self.native_middle_down {
                 self.native_middle_down = false;
+                return Route::Forward;
+            }
+            if !self.scrolling && !self.starting_release_pending {
+                // The daemon may have been paused while the corresponding
+                // press was passed through. Never swallow that orphan release
+                // after controls resume.
                 return Route::Forward;
             }
             if mode == Mode::Hold && self.scrolling {
@@ -248,6 +265,15 @@ mod tests {
     }
 
     #[test]
+    fn orphan_middle_release_is_forwarded_after_pass_through() {
+        let mut state = Interaction::default();
+        assert_eq!(
+            state.button(MIDDLE, 0, MIDDLE, Decision::Unknown, Mode::Toggle),
+            Route::Forward
+        );
+    }
+
+    #[test]
     fn scroll_context_starts_without_a_timer() {
         let mut state = Interaction::default();
         assert_eq!(
@@ -297,6 +323,37 @@ mod tests {
         assert_eq!(
             state.button(MIDDLE, 0, MIDDLE, Decision::Native, Mode::Toggle),
             Route::Forward
+        );
+    }
+
+    #[test]
+    fn actionable_stopping_middle_click_can_be_forwarded() {
+        let mut state = Interaction::default();
+        state.button(MIDDLE, 1, MIDDLE, Decision::Scroll, Mode::Toggle);
+        state.button(MIDDLE, 0, MIDDLE, Decision::Scroll, Mode::Toggle);
+        assert_eq!(
+            state.button(MIDDLE, 1, MIDDLE, Decision::Scroll, Mode::Toggle),
+            Route::Stop
+        );
+        assert!(state.forward_stopping_press(MIDDLE, MIDDLE));
+        assert_eq!(
+            state.button(MIDDLE, 0, MIDDLE, Decision::Native, Mode::Toggle),
+            Route::Forward
+        );
+    }
+
+    #[test]
+    fn background_stopping_middle_click_remains_consumed() {
+        let mut state = Interaction::default();
+        state.button(MIDDLE, 1, MIDDLE, Decision::Scroll, Mode::Toggle);
+        state.button(MIDDLE, 0, MIDDLE, Decision::Scroll, Mode::Toggle);
+        assert_eq!(
+            state.button(MIDDLE, 1, MIDDLE, Decision::Scroll, Mode::Toggle),
+            Route::Stop
+        );
+        assert_eq!(
+            state.button(MIDDLE, 0, MIDDLE, Decision::Scroll, Mode::Toggle),
+            Route::Consume
         );
     }
 
