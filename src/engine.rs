@@ -289,6 +289,29 @@ mod tests {
     }
 
     #[test]
+    fn stopping_middle_release_does_not_consume_the_next_middle_click() {
+        let mut state = Interaction::default();
+        state.button(MIDDLE, 1, MIDDLE, Decision::Scroll, Mode::Toggle);
+        state.button(MIDDLE, 0, MIDDLE, Decision::Scroll, Mode::Toggle);
+        assert_eq!(
+            state.button(MIDDLE, 1, MIDDLE, Decision::Scroll, Mode::Toggle),
+            Route::Stop
+        );
+        assert_eq!(
+            state.button(MIDDLE, 0, MIDDLE, Decision::Scroll, Mode::Toggle),
+            Route::Consume
+        );
+        assert_eq!(
+            state.button(MIDDLE, 1, MIDDLE, Decision::Native, Mode::Toggle),
+            Route::Forward
+        );
+        assert_eq!(
+            state.button(MIDDLE, 0, MIDDLE, Decision::Native, Mode::Toggle),
+            Route::Forward
+        );
+    }
+
+    #[test]
     fn toggle_scroll_accumulates_motion_without_moving_pointer() {
         let mut state = Interaction::default();
         state.button(MIDDLE, 1, MIDDLE, Decision::Scroll, Mode::Toggle);

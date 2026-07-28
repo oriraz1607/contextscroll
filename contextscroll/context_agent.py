@@ -786,10 +786,10 @@ class ContextWorker(threading.Thread):
         self.refresh_callback = None
         self.cursor_callback = None
         self.pending_request_id = 0
+        self.context_generation = 0
 
     def set_active_callback(self, callback) -> None:
         self.active_callback = callback
-        callback(self.active)
 
     def set_refresh_callback(self, callback) -> None:
         self.refresh_callback = callback
@@ -797,15 +797,20 @@ class ContextWorker(threading.Thread):
     def set_cursor_callback(self, callback) -> None:
         self.cursor_callback = callback
 
-    def _set_active(self, active: bool) -> None:
-        if active == self.active:
+    def _set_active(self, active: bool, generation: int) -> None:
+        if active == self.active and generation <= self.context_generation:
             return
-        self.active = active
         if self.active_callback is not None:
             try:
-                self.active_callback(active)
+                self.active_callback(active, generation)
             except Exception as error:
                 log.warning("could not update autoscroll indicator: %s", error)
+                return
+        self.active = active
+        self.context_generation = max(
+            self.context_generation,
+            generation,
+        )
 
     def _disconnect(self) -> None:
         if self.connection is not None:
@@ -815,7 +820,7 @@ class ContextWorker(threading.Thread):
                 pass
         self.connection = None
         self.receive_buffer.clear()
-        self._set_active(False)
+        self._set_active(False, self.context_generation)
 
     def _connect(self) -> bool:
         if self.connection is not None:
@@ -869,7 +874,7 @@ class ContextWorker(threading.Thread):
                     self._disconnect()
                     return
                 if isinstance(report, ActivityReport):
-                    self._set_active(report.active)
+                    self._set_active(report.active, report.generation)
                 elif isinstance(report, RefreshReport):
                     self.pending_request_id = max(
                         self.pending_request_id,
@@ -952,6 +957,7 @@ class ContextWorker(threading.Thread):
                 self.last_report = replace(
                     report,
                     request_id=self.pending_request_id,
+                    generation=self.context_generation,
                 )
                 generation = current_generation
                 queried = True
@@ -1067,19 +1073,31 @@ def main(argv=None) -> int:
             ) from error
         pointer.connect(points.update)
 
-        def update_indicator(active):
+        def update_indicator(active, _generation):
+            completed = threading.Event()
+
             def apply_indicator():
-                if pointer is not None:
-                    pointer.set_indicator(active)
+                try:
+                    if pointer is not None:
+                        pointer.set_indicator(active)
+                        if not active:
+                            points.update(*pointer.refresh_position())
+                            points.refresh()
+                finally:
+                    completed.set()
                 return glib.SOURCE_REMOVE
 
             glib.idle_add(
                 apply_indicator,
                 priority=glib.PRIORITY_HIGH,
             )
+            while not completed.wait(STATE_POLL_SECONDS):
+                if stop.is_set():
+                    return
 
         # The Shell-facing GDBusProxy remains on the GLib thread. The socket
-        # worker publishes only the desired boolean state.
+        # worker waits for pointer restoration before accepting the new
+        # context generation.
         worker.set_active_callback(update_indicator)
 
         def update_cursor(x, y):

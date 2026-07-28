@@ -50,12 +50,15 @@ pub struct ContextMessage {
     pub decision: String,
     #[serde(default)]
     pub request_id: u64,
+    #[serde(default)]
+    pub generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContextUpdate {
     pub decision: Decision,
     pub request_id: u64,
+    pub generation: u64,
 }
 
 impl ContextMessage {
@@ -74,6 +77,7 @@ impl ContextMessage {
         Ok(ContextUpdate {
             decision,
             request_id: message.request_id,
+            generation: message.generation,
         })
     }
 }
@@ -83,6 +87,8 @@ pub struct ContextCache {
     started: Instant,
     decision: AtomicU8,
     updated_millis: AtomicU64,
+    updated_generation: AtomicU64,
+    required_generation: AtomicU64,
     acknowledged_request: AtomicU64,
     wait_lock: Mutex<()>,
     wait_condition: Condvar,
@@ -100,6 +106,8 @@ impl ContextCache {
             started: Instant::now(),
             decision: AtomicU8::new(Decision::Unknown as u8),
             updated_millis: AtomicU64::new(0),
+            updated_generation: AtomicU64::new(0),
+            required_generation: AtomicU64::new(0),
             acknowledged_request: AtomicU64::new(0),
             wait_lock: Mutex::new(()),
             wait_condition: Condvar::new(),
@@ -119,6 +127,8 @@ impl ContextCache {
         // timestamp will then observe the corresponding decision.
         self.decision
             .store(update.decision as u8, Ordering::Relaxed);
+        self.updated_generation
+            .store(update.generation, Ordering::Relaxed);
         self.updated_millis
             .store(self.elapsed_millis().max(1), Ordering::Release);
         self.acknowledged_request
@@ -133,10 +143,28 @@ impl ContextCache {
         self.updated_millis.store(0, Ordering::Release);
     }
 
+    pub fn require_generation(&self, generation: u64) {
+        let _guard = self
+            .wait_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.required_generation
+            .fetch_max(generation, Ordering::Release);
+        if self.updated_generation.load(Ordering::Acquire) < generation {
+            self.invalidate();
+        }
+    }
+
+    fn generation_is_current(&self) -> bool {
+        self.updated_generation.load(Ordering::Acquire)
+            >= self.required_generation.load(Ordering::Acquire)
+    }
+
     pub fn current(&self, unknown_action: Decision) -> Decision {
         let updated = self.updated_millis.load(Ordering::Acquire);
         let age = self.elapsed_millis().saturating_sub(updated);
-        if updated == 0 || age > MAX_CONTEXT_AGE.as_millis() as u64 {
+        if updated == 0 || age > MAX_CONTEXT_AGE.as_millis() as u64 || !self.generation_is_current()
+        {
             return unknown_action;
         }
         let decision = Decision::from_atomic(self.decision.load(Ordering::Relaxed));
@@ -151,6 +179,7 @@ impl ContextCache {
         let updated = self.updated_millis.load(Ordering::Acquire);
         updated == 0
             || self.elapsed_millis().saturating_sub(updated) > MAX_CONTEXT_AGE.as_millis() as u64
+            || !self.generation_is_current()
             || Decision::from_atomic(self.decision.load(Ordering::Relaxed)) == Decision::Unknown
     }
 
@@ -168,9 +197,12 @@ impl ContextCache {
             .wait_condition
             .wait_timeout_while(guard, timeout, |_| {
                 self.acknowledged_request.load(Ordering::Acquire) < request_id
+                    || !self.generation_is_current()
             })
             .unwrap_or_else(|error| error.into_inner());
-        if self.acknowledged_request.load(Ordering::Acquire) < request_id {
+        if self.acknowledged_request.load(Ordering::Acquire) < request_id
+            || !self.generation_is_current()
+        {
             unknown_action
         } else {
             self.current(unknown_action)
@@ -196,6 +228,7 @@ mod tests {
             ContextUpdate {
                 decision: Decision::Scroll,
                 request_id: 0,
+                generation: 0,
             }
         );
     }
@@ -212,6 +245,7 @@ mod tests {
         cache.update(ContextUpdate {
             decision: Decision::Scroll,
             request_id: 0,
+            generation: 0,
         });
         assert_eq!(cache.current(Decision::Native), Decision::Scroll);
     }
@@ -222,6 +256,7 @@ mod tests {
         cache.update(ContextUpdate {
             decision: Decision::Scroll,
             request_id: 0,
+            generation: 0,
         });
         cache.invalidate();
         assert_eq!(cache.current(Decision::Native), Decision::Native);
@@ -233,6 +268,7 @@ mod tests {
         cache.update(ContextUpdate {
             decision: Decision::Scroll,
             request_id: 7,
+            generation: 0,
         });
         assert_eq!(
             cache.wait_for_request(7, Duration::from_millis(1), Decision::Native,),
@@ -246,10 +282,43 @@ mod tests {
         cache.update(ContextUpdate {
             decision: Decision::Scroll,
             request_id: 0,
+            generation: 0,
         });
         assert_eq!(
             cache.wait_for_request(8, Duration::from_millis(1), Decision::Native,),
             Decision::Native
         );
+    }
+
+    #[test]
+    fn pre_stop_decision_cannot_satisfy_post_stop_generation() {
+        let cache = ContextCache::new();
+        cache.update(ContextUpdate {
+            decision: Decision::Scroll,
+            request_id: 10,
+            generation: 0,
+        });
+        cache.require_generation(1);
+
+        cache.update(ContextUpdate {
+            decision: Decision::Scroll,
+            request_id: 11,
+            generation: 0,
+        });
+        assert_eq!(
+            cache.wait_for_request(11, Duration::from_millis(1), Decision::Native),
+            Decision::Native
+        );
+
+        cache.update(ContextUpdate {
+            decision: Decision::Native,
+            request_id: 12,
+            generation: 1,
+        });
+        assert_eq!(
+            cache.wait_for_request(12, Duration::from_millis(1), Decision::Native),
+            Decision::Native
+        );
+        assert!(!cache.needs_refresh());
     }
 }

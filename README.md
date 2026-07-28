@@ -73,6 +73,11 @@ acknowledged hit-test and waits for at most 60 ms before safely falling back to
 native middle-click. This bounded refresh applies only to stale or unknown
 context; it is not a fixed delay.
 
+Ending autoscroll advances a context generation. The next decision is accepted
+only after GNOME has restored the hidden pointer to the replacement cursor and
+the helper has classified that new position. A recent decision from the
+previous autoscroll location therefore cannot consume a link or tab click.
+
 AT-SPI and desktop D-Bus work stays on the graphical session's GLib thread.
 The Rust click path never performs AT-SPI, D-Bus, subprocess,
 image-recognition, or network work itself.
@@ -136,10 +141,10 @@ First stop any other daemon that exclusively grabs the same mouse.
 For a one-command install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oriraz1607/contextscroll/v0.3.0/scripts/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oriraz1607/contextscroll/v0.3.1/scripts/bootstrap.sh | bash
 ```
 
-The bootstrap creates a temporary shallow checkout of the immutable `v0.3.0`
+The bootstrap creates a temporary shallow checkout of the immutable `v0.3.1`
 release, runs the normal installer, and removes the checkout afterward.
 
 To install from an existing checkout instead:

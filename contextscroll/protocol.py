@@ -22,11 +22,13 @@ class ContextReport:
     x: int | None = None
     y: int | None = None
     request_id: int = 0
+    generation: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class ActivityReport:
     active: bool
+    generation: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +53,7 @@ def encode(report: ContextReport) -> bytes:
         "x": report.x,
         "y": report.y,
         "request_id": report.request_id,
+        "generation": report.generation,
     }
     return json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n"
 
@@ -93,6 +96,7 @@ def decode(line: bytes) -> ContextReport:
         x=coordinate("x"),
         y=coordinate("y"),
         request_id=request_id(payload),
+        generation=generation(payload),
     )
 
 
@@ -104,6 +108,17 @@ def request_id(payload: dict) -> int:
         or not 0 <= value <= 2**64 - 1
     ):
         raise ValueError("request_id is out of range")
+    return value
+
+
+def generation(payload: dict) -> int:
+    value = payload.get("generation", 0)
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value <= 2**64 - 1
+    ):
+        raise ValueError("generation is out of range")
     return value
 
 
@@ -121,7 +136,7 @@ def decode_daemon(
     if payload.get("type") == "activity" and isinstance(
         payload.get("active"), bool
     ):
-        return ActivityReport(payload["active"])
+        return ActivityReport(payload["active"], generation(payload))
     if payload.get("type") == "refresh":
         value = request_id(payload)
         if value > 0:

@@ -41,14 +41,24 @@ class ProtocolTests(unittest.TestCase):
 
     def test_activity_report_round_trip_from_daemon(self):
         self.assertEqual(
-            decode_activity(b'{"v":1,"type":"activity","active":true}\n'),
-            ActivityReport(True),
+            decode_activity(
+                b'{"v":1,"type":"activity","active":true,'
+                b'"generation":9}\n'
+            ),
+            ActivityReport(True, 9),
         )
 
     def test_invalid_activity_report_is_rejected(self):
         with self.assertRaises(ValueError):
             decode_activity(
                 b'{"v":1,"type":"activity","active":"yes"}\n'
+            )
+
+    def test_boolean_activity_generation_is_rejected(self):
+        with self.assertRaises(ValueError):
+            decode_activity(
+                b'{"v":1,"type":"activity","active":true,'
+                b'"generation":true}\n'
             )
 
     def test_refresh_report_round_trip_from_daemon(self):
@@ -77,6 +87,7 @@ class ProtocolTests(unittest.TestCase):
             x=20,
             y=30,
             request_id=17,
+            generation=3,
         )
         self.assertEqual(decode(encode(report)), report)
 

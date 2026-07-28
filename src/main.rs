@@ -38,6 +38,12 @@ struct CursorOffset {
     y: i32,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ActivityState {
+    active: bool,
+    generation: u64,
+}
+
 #[derive(Debug)]
 struct Arguments {
     config: PathBuf,
@@ -49,7 +55,8 @@ struct Arguments {
 #[derive(Debug)]
 struct DaemonSignals {
     active_devices: AtomicUsize,
-    activity_sender: watch::Sender<bool>,
+    activity_sender: watch::Sender<ActivityState>,
+    context_generation: AtomicU64,
     next_refresh_id: AtomicU64,
     refresh_sender: watch::Sender<u64>,
     cursor_sender: watch::Sender<CursorOffset>,
@@ -57,13 +64,14 @@ struct DaemonSignals {
 
 impl DaemonSignals {
     fn new(
-        activity_sender: watch::Sender<bool>,
+        activity_sender: watch::Sender<ActivityState>,
         refresh_sender: watch::Sender<u64>,
         cursor_sender: watch::Sender<CursorOffset>,
     ) -> Self {
         Self {
             active_devices: AtomicUsize::new(0),
             activity_sender,
+            context_generation: AtomicU64::new(0),
             next_refresh_id: AtomicU64::new(0),
             refresh_sender,
             cursor_sender,
@@ -72,15 +80,25 @@ impl DaemonSignals {
 
     fn start(&self) {
         if self.active_devices.fetch_add(1, Ordering::SeqCst) == 0 {
-            self.activity_sender.send_replace(true);
+            self.activity_sender.send_replace(ActivityState {
+                active: true,
+                generation: self.context_generation.load(Ordering::SeqCst),
+            });
         }
     }
 
-    fn stop(&self) {
+    fn stop(&self) -> Option<u64> {
         let previous = self.active_devices.fetch_sub(1, Ordering::SeqCst);
         debug_assert!(previous > 0);
         if previous == 1 {
-            self.activity_sender.send_replace(false);
+            let generation = self.context_generation.fetch_add(1, Ordering::SeqCst) + 1;
+            self.activity_sender.send_replace(ActivityState {
+                active: false,
+                generation,
+            });
+            Some(generation)
+        } else {
+            None
         }
     }
 
@@ -368,7 +386,9 @@ fn run_mouse(
                             }
                             Route::Stop => {
                                 if announced_active {
-                                    signals.stop();
+                                    if let Some(generation) = signals.stop() {
+                                        cache.require_generation(generation);
+                                    }
                                     announced_active = false;
                                 }
                                 wheel.clear();
@@ -532,12 +552,12 @@ where
     }
 }
 
-fn activity_message(active: bool) -> &'static [u8] {
-    if active {
-        b"{\"v\":1,\"type\":\"activity\",\"active\":true}\n"
-    } else {
-        b"{\"v\":1,\"type\":\"activity\",\"active\":false}\n"
-    }
+fn activity_message(state: ActivityState) -> Vec<u8> {
+    format!(
+        "{{\"v\":1,\"type\":\"activity\",\"active\":{},\"generation\":{}}}\n",
+        state.active, state.generation
+    )
+    .into_bytes()
 }
 
 fn refresh_message(request_id: u64) -> Vec<u8> {
@@ -555,7 +575,7 @@ fn cursor_message(offset: CursorOffset) -> Vec<u8> {
 async fn handle_context_client(
     stream: UnixStream,
     cache: Arc<ContextCache>,
-    mut activity: watch::Receiver<bool>,
+    mut activity: watch::Receiver<ActivityState>,
     mut refresh_requests: watch::Receiver<u64>,
     mut cursor: watch::Receiver<CursorOffset>,
     debug_enabled: bool,
@@ -571,7 +591,7 @@ async fn handle_context_client(
     let mut line = Vec::<u8>::with_capacity(512);
     let initial_activity = *activity.borrow();
     write_half
-        .write_all(activity_message(initial_activity))
+        .write_all(&activity_message(initial_activity))
         .await?;
     let initial_cursor = *cursor.borrow();
     write_half
@@ -581,8 +601,8 @@ async fn handle_context_client(
         tokio::select! {
             changed = activity.changed() => {
                 changed?;
-                let active = *activity.borrow_and_update();
-                if !active {
+                let state = *activity.borrow_and_update();
+                if !state.active {
                     // Make the final visual position precede deactivation on
                     // the wire, even when Tokio selects the activity watch
                     // before a pending cursor-watch notification.
@@ -592,7 +612,7 @@ async fn handle_context_client(
                         .await?;
                 }
                 write_half
-                    .write_all(activity_message(active))
+                    .write_all(&activity_message(state))
                     .await?;
             }
             changed = refresh_requests.changed() => {
@@ -630,7 +650,7 @@ async fn handle_context_client(
 async fn context_server(
     path: PathBuf,
     cache: Arc<ContextCache>,
-    activity: watch::Receiver<bool>,
+    activity: watch::Receiver<ActivityState>,
     refresh_requests: watch::Receiver<u64>,
     cursor: watch::Receiver<CursorOffset>,
     debug_enabled: bool,
@@ -697,7 +717,7 @@ async fn run(arguments: Arguments) -> Result<(), AnyError> {
     }
 
     let cache = Arc::new(ContextCache::new());
-    let (activity_sender, activity_receiver) = watch::channel(false);
+    let (activity_sender, activity_receiver) = watch::channel(ActivityState::default());
     let (refresh_sender, refresh_receiver) = watch::channel(0);
     let (cursor_sender, cursor_receiver) = watch::channel(CursorOffset::default());
     let signals = Arc::new(DaemonSignals::new(
@@ -792,26 +812,42 @@ mod tests {
 
     #[test]
     fn activity_tracks_multiple_mice() {
-        let (sender, receiver) = watch::channel(false);
+        let (sender, receiver) = watch::channel(ActivityState::default());
         let (refresh_sender, _refresh_receiver) = watch::channel(0);
         let (cursor_sender, _cursor_receiver) = watch::channel(CursorOffset::default());
         let signals = DaemonSignals::new(sender, refresh_sender, cursor_sender);
         signals.start();
-        assert!(*receiver.borrow());
+        assert!(receiver.borrow().active);
         signals.start();
-        signals.stop();
-        assert!(*receiver.borrow());
-        signals.stop();
-        assert!(!*receiver.borrow());
+        assert_eq!(signals.stop(), None);
+        assert!(receiver.borrow().active);
+        assert_eq!(signals.stop(), Some(1));
+        assert_eq!(
+            *receiver.borrow(),
+            ActivityState {
+                active: false,
+                generation: 1
+            }
+        );
     }
 
     #[test]
     fn activity_protocol_is_bounded_json() {
         assert_eq!(
-            activity_message(true),
-            b"{\"v\":1,\"type\":\"activity\",\"active\":true}\n"
+            activity_message(ActivityState {
+                active: true,
+                generation: 7
+            }),
+            b"{\"v\":1,\"type\":\"activity\",\"active\":true,\"generation\":7}\n"
         );
-        assert!(activity_message(false).len() < MAX_LINE_BYTES);
+        assert!(
+            activity_message(ActivityState {
+                active: false,
+                generation: u64::MAX
+            })
+            .len()
+                < MAX_LINE_BYTES
+        );
     }
 
     #[test]
@@ -841,7 +877,7 @@ mod tests {
 
     #[test]
     fn cursor_offset_is_published_for_the_session_helper() {
-        let (activity_sender, _activity_receiver) = watch::channel(false);
+        let (activity_sender, _activity_receiver) = watch::channel(ActivityState::default());
         let (refresh_sender, _refresh_receiver) = watch::channel(0);
         let (cursor_sender, cursor_receiver) = watch::channel(CursorOffset::default());
         let signals = DaemonSignals::new(activity_sender, refresh_sender, cursor_sender);
@@ -857,7 +893,7 @@ mod tests {
 
     #[test]
     fn refresh_requests_are_monotonic() {
-        let (activity_sender, _activity_receiver) = watch::channel(false);
+        let (activity_sender, _activity_receiver) = watch::channel(ActivityState::default());
         let (refresh_sender, refresh_receiver) = watch::channel(0);
         let (cursor_sender, _cursor_receiver) = watch::channel(CursorOffset::default());
         let signals = DaemonSignals::new(activity_sender, refresh_sender, cursor_sender);

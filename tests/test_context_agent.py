@@ -417,8 +417,10 @@ class ContextWorkerTests(unittest.TestCase):
             def __init__(self):
                 self.chunks = [
                     (
-                        b'{"v":1,"type":"activity","active":true}\n'
-                        b'{"v":1,"type":"activity","active":false}\n'
+                        b'{"v":1,"type":"activity","active":true,'
+                        b'"generation":4}\n'
+                        b'{"v":1,"type":"activity","active":false,'
+                        b'"generation":5}\n'
                     )
                 ]
 
@@ -435,11 +437,16 @@ class ContextWorkerTests(unittest.TestCase):
         )
         worker.connection = FakeConnection()
         changes = []
-        worker.set_active_callback(changes.append)
+        worker.set_active_callback(
+            lambda active, generation: changes.append(
+                (active, generation)
+            )
+        )
 
         worker._receive_activity()
 
-        self.assertEqual(changes, [False, True, False])
+        self.assertEqual(changes, [(True, 4), (False, 5)])
+        self.assertEqual(worker.context_generation, 5)
 
     def test_refresh_request_schedules_a_fresh_pointer_sample(self):
         class FakeConnection:

@@ -56,7 +56,8 @@ The helper sends only:
 - accessible role;
 - application and object names;
 - pointer coordinates;
-- the monotonic ID of a refresh request being acknowledged.
+- the monotonic ID of a refresh request being acknowledged;
+- the cursor context generation that produced the decision.
 
 Names are used only for diagnostics and are not persisted.
 
@@ -80,6 +81,7 @@ Messages use bounded newline-delimited JSON:
 - an enumerated decision value;
 - a boolean active state in daemon-to-helper messages;
 - a bounded monotonic refresh request ID;
+- a bounded context generation used to reject pre-warp decisions;
 - malformed or oversized input disconnects the client.
 
 ## Failure behavior

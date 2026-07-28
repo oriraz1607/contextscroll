@@ -159,6 +159,10 @@ class GnomeShellPointer:
     def position(self):
         return self._position
 
+    def refresh_position(self):
+        self._position = self._read_position()
+        return self._position
+
     def set_indicator(self, active: bool) -> None:
         if self._proxy is None or self._glib is None:
             return
