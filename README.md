@@ -162,10 +162,9 @@ sudo apt install acl cargo rustc python3-gi gir1.2-atspi-2.0 at-spi2-core libx11
 
 First stop any other daemon that exclusively grabs the same mouse.
 
-The latest published release is [v0.4.1](https://github.com/oriraz1607/contextscroll/releases/tag/v0.4.1).
-It provides source archives only; there are no prebuilt Linux bundles attached.
-The current `main` branch identifies itself as **0.5.0**, but that version has
-not been published as a release. This README describes the current source.
+The latest published release is [v0.5.0](https://github.com/oriraz1607/contextscroll/releases/tag/v0.5.0).
+It currently provides GitHub source archives only; there are no prebuilt Linux
+bundles attached. This README describes the current source on `main`.
 
 To install the current development version from source:
 
@@ -176,18 +175,14 @@ cd contextscroll
 ```
 
 For an existing checkout, run `./scripts/install.sh --from-source` from its root.
-To install the published **v0.4.1** source instead, use its own installer syntax:
+To install the published **v0.5.0** source instead, check out its tag explicitly:
 
 ```bash
-git clone --branch v0.4.1 --depth 1 \
-  https://github.com/oriraz1607/contextscroll.git contextscroll-v0.4.1
-cd contextscroll-v0.4.1
-./scripts/install.sh
+git clone --branch v0.5.0 --depth 1 \
+  https://github.com/oriraz1607/contextscroll.git contextscroll-v0.5.0
+cd contextscroll-v0.5.0
+./scripts/install.sh --from-source
 ```
-
-See the [v0.4.1 README](https://github.com/oriraz1607/contextscroll/blob/v0.4.1/README.md)
-for that release's behavior and installation details. Its installer predates
-`--from-source` and the hardened installation process described below.
 
 Future prebuilt bundles must be verified with `gh attestation verify` before
 running downloaded code; see [SECURITY.md](SECURITY.md) for the release trust model.
