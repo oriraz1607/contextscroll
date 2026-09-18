@@ -61,5 +61,6 @@ jobs:
         env:
           ACTIONLINT_VERSION: "1.7.12"
         run: |
-          go install "github.com/rhysd/actionlint/cmd/actionlint@v${ACTIONLINT_VERSION}"
-          actionlint
+          GOBIN="$RUNNER_TEMP/bin" \
+            go install "github.com/rhysd/actionlint/cmd/actionlint@v${ACTIONLINT_VERSION}"
+          "$RUNNER_TEMP/bin/actionlint"
