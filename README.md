@@ -13,6 +13,23 @@ with a recognizable native middle-click purpose keeps that behavior, while a
 plain page or document surface starts autoscroll. Links still open in new tabs
 and browser tabs still close immediately.
 
+## See it in motion
+
+Middle-click a page, move to scroll, then click to stop. The cursor follows your
+mouse and indicates the vertical scroll direction.
+
+![Animated illustration of middle-click autoscroll: activate on a page, scroll down, reverse upward, and click to stop.](docs/demos/autoscroll.gif)
+
+Links and tabs keep their normal middle-click actions: open a link in a
+background tab, or close a tab without activating autoscroll.
+
+![Animated illustration of native middle-click behavior: a link opens in a background tab, then middle-clicking that tab closes it.](docs/demos/native-middle-click.gif)
+
+*These are scripted illustrations, not desktop recordings. The autoscroll demo
+uses the actual GNOME extension cursor artwork; application styling and native
+middle-click behavior vary by desktop and browser. [Static usage instructions](#use)
+and [demo sources](docs/demos/README.md) are also available.*
+
 Highlights:
 
 - Windows-style toggle and hold autoscrolling with vertical and horizontal
@@ -145,37 +162,39 @@ sudo apt install acl cargo rustc python3-gi gir1.2-atspi-2.0 at-spi2-core libx11
 
 First stop any other daemon that exclusively grabs the same mouse.
 
-Download the bundle for your architecture from the release page. The supported
-installation path verifies its GitHub/Sigstore provenance before any downloaded
-code is executed:
+The latest published release is [v0.4.1](https://github.com/oriraz1607/contextscroll/releases/tag/v0.4.1).
+It provides source archives only; there are no prebuilt Linux bundles attached.
+The current `main` branch identifies itself as **0.5.0**, but that version has
+not been published as a release. This README describes the current source.
+
+To install the current development version from source:
 
 ```bash
-VERSION=v0.5.0
-ARCH=$(uname -m)
-gh release download "$VERSION" \
-  --repo oriraz1607/contextscroll \
-  --pattern "contextscroll-${VERSION}-linux-${ARCH}.tar.gz"
-gh attestation verify \
-  "contextscroll-${VERSION}-linux-${ARCH}.tar.gz" \
-  --repo oriraz1607/contextscroll
-tar -xzf "contextscroll-${VERSION}-linux-${ARCH}.tar.gz"
-cd "contextscroll-${VERSION}-linux-${ARCH}"
-./scripts/install.sh
-```
-
-`x86_64` and `aarch64` bundles are supported. Verification establishes which
-repository commit and workflow produced the archive; it is not a substitute
-for reviewing this security-sensitive project.
-
-To build from an existing checkout instead, use the explicitly advanced source
-path:
-
-```bash
+git clone https://github.com/oriraz1607/contextscroll.git
+cd contextscroll
 ./scripts/install.sh --from-source
 ```
 
-The installer verifies the bundle manifest, creates a private root-owned
-snapshot, verifies it again, and installs from that snapshot. The privileged
+For an existing checkout, run `./scripts/install.sh --from-source` from its root.
+To install the published **v0.4.1** source instead, use its own installer syntax:
+
+```bash
+git clone --branch v0.4.1 --depth 1 \
+  https://github.com/oriraz1607/contextscroll.git contextscroll-v0.4.1
+cd contextscroll-v0.4.1
+./scripts/install.sh
+```
+
+See the [v0.4.1 README](https://github.com/oriraz1607/contextscroll/blob/v0.4.1/README.md)
+for that release's behavior and installation details. Its installer predates
+`--from-source` and the hardened installation process described below.
+
+Future prebuilt bundles must be verified with `gh attestation verify` before
+running downloaded code; see [SECURITY.md](SECURITY.md) for the release trust model.
+
+The current installer verifies the bundle manifest when installing a bundle,
+creates a private root-owned snapshot, verifies it again, and installs from that
+snapshot. The privileged
 phase never runs Cargo or reads executable content from the original
 user-writable directory. It preserves an existing regular
 `/etc/contextscroll.conf` and refuses a symlinked configuration.
