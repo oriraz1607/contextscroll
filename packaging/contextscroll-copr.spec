@@ -4,7 +4,7 @@
 %global __os_install_post %{nil}
 
 Name:           contextscroll
-Version:        %{contextscroll_version}
+Version:        0.6.0
 Release:        1%{?dist}
 Summary:        Context-aware middle-click autoscrolling for Linux
 License:        MIT

@@ -17,6 +17,12 @@ version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n1)
     echo "Could not read a release version from Cargo.toml." >&2
     exit 1
 }
+spec_version=$(sed -n 's/^Version:[[:space:]]*//p' \
+    packaging/contextscroll-copr.spec | head -n1)
+[[ $spec_version == "$version" ]] || {
+    echo "The COPR spec version ($spec_version) does not match Cargo.toml ($version)." >&2
+    exit 1
+}
 
 release_url="https://github.com/oriraz1607/contextscroll/releases/download/v${version}"
 work=$(mktemp -d -t contextscroll-copr-srpm.XXXXXXXX)
@@ -43,8 +49,7 @@ install -m 0644 packaging/contextscroll-copr.spec \
     "$work/SPECS/contextscroll-copr.spec"
 rpmbuild -bs "$work/SPECS/contextscroll-copr.spec" \
     --define "_topdir $work" \
-    --define "_tmppath $work/tmp" \
-    --define "contextscroll_version $version"
+    --define "_tmppath $work/tmp"
 
 srpm=$(find "$work/SRPMS" -maxdepth 1 -type f \
     -name "contextscroll-${version}-*.src.rpm" -print -quit)
