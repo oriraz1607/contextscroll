@@ -16,19 +16,21 @@ and browser tabs still close immediately.
 ## Try ContextScroll 0.6.0
 
 ContextScroll supports **GNOME 48+ on Wayland** and Linux desktops running
-**X11**, on x86_64 and aarch64. Fedora users can install the RPM; other
-systemd-based distributions can use the portable bundle.
+**X11**, on x86_64 and aarch64. Fedora users can install from COPR for easy
+updates; other systemd-based distributions can use the portable bundle.
 
 ### Fedora (recommended)
 
 ```bash
-arch=$(uname -m)
-package="contextscroll-0.6.0-1.${arch}.rpm"
-curl -LO "https://github.com/oriraz1607/contextscroll/releases/download/v0.6.0/$package"
-sudo dnf install "./$package"
+sudo dnf copr enable oriraz/ContextScroll
+sudo dnf install contextscroll
 sudo systemctl enable --now contextscroll.service
 systemctl --user enable --now contextscroll-context.service
 ```
+
+The [ContextScroll COPR repository](https://copr.fedorainfracloud.org/coprs/oriraz/ContextScroll/)
+delivers future package updates through the normal DNF update flow. To install
+the standalone release RPM instead, see [Fedora RPM](#fedora-rpm).
 
 ### Portable bundle
 
@@ -222,8 +224,9 @@ First stop any other daemon that exclusively grabs the same mouse.
 
 ### Fedora COPR
 
-Fedora users can install ContextScroll from COPR and receive updates through
-DNF:
+Fedora users can enable the
+[ContextScroll COPR repository](https://copr.fedorainfracloud.org/coprs/oriraz/ContextScroll/)
+and receive future ContextScroll updates through the normal DNF update flow:
 
 ```bash
 sudo dnf copr enable oriraz/ContextScroll
