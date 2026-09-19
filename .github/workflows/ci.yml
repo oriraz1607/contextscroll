@@ -25,7 +25,8 @@ jobs:
       - name: Build and inspect source RPM
         run: |
           mkdir -p dist
-          make srpm outdir="$PWD/dist"
+          make -f .copr/Makefile srpm outdir="$PWD/dist" \
+            spec="$PWD/packaging/contextscroll-copr.spec"
           srpm=$(find dist -maxdepth 1 -name '*.src.rpm' -print -quit)
           test -n "$srpm"
           rpm -qip "$srpm"
