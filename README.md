@@ -13,6 +13,53 @@ with a recognizable native middle-click purpose keeps that behavior, while a
 plain page or document surface starts autoscroll. Links still open in new tabs
 and browser tabs still close immediately.
 
+## Try ContextScroll 0.6.0
+
+ContextScroll supports **GNOME 48+ on Wayland** and Linux desktops running
+**X11**, on x86_64 and aarch64. Fedora users can install the RPM; other
+systemd-based distributions can use the portable bundle.
+
+### Fedora (recommended)
+
+```bash
+arch=$(uname -m)
+package="contextscroll-0.6.0-1.${arch}.rpm"
+curl -LO "https://github.com/oriraz1607/contextscroll/releases/download/v0.6.0/$package"
+sudo dnf install "./$package"
+sudo systemctl enable --now contextscroll.service
+systemctl --user enable --now contextscroll-context.service
+```
+
+### Portable bundle
+
+Install the runtime dependencies listed below, then:
+
+```bash
+arch=$(uname -m)
+archive="contextscroll-v0.6.0-linux-${arch}.tar.gz"
+curl -LO "https://github.com/oriraz1607/contextscroll/releases/download/v0.6.0/$archive"
+tar -xzf "$archive"
+cd "contextscroll-v0.6.0-linux-${arch}"
+./scripts/install.sh
+```
+
+On GNOME, sign out and back in once after installation so Shell can discover
+the extension. Then try it: point at a page, middle-click once, move the mouse
+to scroll, and click again to stop. Links and tabs keep their normal
+middle-click actions.
+
+For provenance verification, distribution dependencies, source installation,
+and troubleshooting, see [Install](#install). You can also jump straight to
+the [v0.6.0 release and downloads](https://github.com/oriraz1607/contextscroll/releases/tag/v0.6.0).
+
+### What is new in 0.6.0
+
+- Fedora RPMs and portable bundles for x86_64 and aarch64;
+- smoother speed ramping at the edge of the deadzone;
+- validated daemon settings and safer repair of malformed context rules;
+- a real 21-second GNOME desktop recording alongside the scripted demos;
+- signed build-provenance attestations, checksums, and an SPDX SBOM.
+
 ## See it in motion
 
 ### Real desktop recording
@@ -67,7 +114,7 @@ cursor appear frozen. When autoscroll stops, the real pointer rejoins it.
 
 ## How it works
 
-ContextScroll is two deliberately separate processes:
+ContextScroll is three deliberately separate processes:
 
 1. The tiny `contextscroll-pointer@contextscroll` GNOME Shell extension publishes
    compositor pointer coordinates and the window beneath them at no more
