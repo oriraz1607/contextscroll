@@ -8,6 +8,28 @@ permissions:
   contents: read
 
 jobs:
+  copr-source-package:
+    name: COPR source package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install RPM tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
+      - name: Build and inspect source RPM
+        run: |
+          mkdir -p dist
+          make srpm outdir="$PWD/dist"
+          srpm=$(find dist -maxdepth 1 -name '*.src.rpm' -print -quit)
+          test -n "$srpm"
+          rpm -qip "$srpm"
+
   test:
     name: Test
     runs-on: ubuntu-latest

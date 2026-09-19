@@ -220,6 +220,21 @@ sudo apt install acl cargo rustc python3-gi gir1.2-atspi-2.0 at-spi2-core libx11
 
 First stop any other daemon that exclusively grabs the same mouse.
 
+### Fedora COPR
+
+Fedora users can install ContextScroll from COPR and receive updates through
+DNF:
+
+```bash
+sudo dnf copr enable oriraz/ContextScroll
+sudo dnf install contextscroll
+sudo systemctl enable --now contextscroll.service
+systemctl --user enable --now contextscroll-context.service
+```
+
+On GNOME, sign out and back in after the first installation so Shell can
+discover the extension.
+
 The [v0.6.0 release](https://github.com/oriraz1607/contextscroll/releases/tag/v0.6.0)
 provides Fedora RPMs and portable Linux bundles for x86_64 and aarch64.
 This README describes the current source on `main`.
