@@ -15,8 +15,19 @@ and browser tabs still close immediately.
 
 ## See it in motion
 
-Middle-click a page, move to scroll, then click to stop. The cursor follows your
-mouse and indicates the vertical scroll direction.
+### Real desktop recording
+
+[![Real GNOME desktop recording of ContextScroll scrolling a Fedora page in a browser](docs/demos/contextscroll-desktop-recording.jpg)](docs/demos/contextscroll-desktop-recording.mp4)
+
+[Watch the 21-second desktop recording (MP4, 2.2 MB)](docs/demos/contextscroll-desktop-recording.mp4).
+It shows page scrolling, opening a link in a background tab, and closing a
+browser tab with middle-click.
+
+### Scripted illustrations
+
+The following GIFs are generated illustrations of the interactions, not desktop
+recordings. Middle-click a page, move to scroll, then click to stop. The cursor
+follows your mouse and indicates the vertical scroll direction.
 
 ![Animated illustration of middle-click autoscroll: activate on a page, scroll down, reverse upward, and click to stop.](docs/demos/autoscroll.gif)
 
@@ -25,10 +36,10 @@ background tab, or close a tab without activating autoscroll.
 
 ![Animated illustration of native middle-click behavior: a link opens in a background tab, then middle-clicking that tab closes it.](docs/demos/native-middle-click.gif)
 
-*These are scripted illustrations, not desktop recordings. The autoscroll demo
-uses the actual GNOME extension cursor artwork; application styling and native
-middle-click behavior vary by desktop and browser. [Static usage instructions](#use)
-and [demo sources](docs/demos/README.md) are also available.*
+*The GIFs use the actual GNOME extension cursor artwork, but their browser
+content is drawn for illustration. Application styling and native middle-click
+behavior vary by desktop and browser. [Static usage instructions](#use) and
+[demo sources](docs/demos/README.md) are also available.*
 
 Highlights:
 
@@ -260,6 +271,8 @@ application name plus an accessible role, name, required states, and required
 actions. All semantic fields on one rule must match the same accessible item.
 The first enabled matching rule wins, and rules can be reordered by dragging
 or with the arrow buttons. New rules start disabled.
+Malformed stored rules remain visible in Preferences with repair and delete
+actions. Repair keeps valid match fields and disables the rule for review.
 
 Rules deliberately override the built-in safety classifier. In particular, a
 rule that forces autoscroll on a link or control suppresses its native
@@ -302,6 +315,11 @@ SOCKET_PATH = /run/contextscroll/context.sock
 `UNKNOWN_ACTION = native` is the safe default. Changing it to `scroll` makes
 unsupported applications autoscroll, but can intercept native middle-click
 actions because no semantic evidence is available.
+
+`TICK_HZ` accepts 10–1000 ticks per second. The scrolling curve uses pointer
+displacement beyond `DEADZONE_PX`, so speed rises smoothly from zero at the edge.
+The maximum speed and pixels-per-notch settings must also produce safe wheel
+event values together.
 
 There is intentionally no click-delay or hold-duration setting.
 
