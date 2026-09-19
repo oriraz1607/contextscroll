@@ -15,6 +15,8 @@ install -m644 gnome-extension/schemas/org.contextscroll.gschema.xml \
 glib-compile-schemas --strict "$schema_test_dir"
 node --check gnome-extension/extension.js
 node --check gnome-extension/prefs.js
+node --check gnome-extension/rule-validation.js
+node tests/test_rule_validation.mjs
 if grep -Eq '\?\.[A-Za-z_$][A-Za-z0-9_$]*[[:space:]]*=' \
     gnome-extension/*.js; then
     echo "GJS does not support assignment through optional chaining." >&2

@@ -181,10 +181,11 @@ impl Interaction {
 }
 
 fn speed(offset: f64, deadzone: f64, multiplier: f64, exponent: f64, maximum: f64) -> f64 {
-    if offset.abs() <= deadzone {
+    let displacement = offset.abs() - deadzone;
+    if displacement <= 0.0 {
         return 0.0;
     }
-    offset.signum() * (multiplier * offset.abs().powf(exponent)).min(maximum)
+    offset.signum() * (multiplier * displacement.powf(exponent)).min(maximum)
 }
 
 #[derive(Debug, Default)]
@@ -424,5 +425,16 @@ mod tests {
             wheel.step(10.0, 10.0, 0.1, 15.0, 0.008, 2.2, 30_000.0, 55.0, false),
             [0; 4]
         );
+    }
+
+    #[test]
+    fn speed_starts_continuously_at_deadzone_on_both_axes() {
+        let args = (15.0, 0.0112, 2.2, 30_000.0);
+        assert_eq!(speed(15.0, args.0, args.1, args.2, args.3), 0.0);
+        let positive = speed(16.0, args.0, args.1, args.2, args.3);
+        assert!((positive - 0.0112).abs() < 1e-12);
+        assert_eq!(speed(-16.0, args.0, args.1, args.2, args.3), -positive);
+        assert!(speed(15.001, args.0, args.1, args.2, args.3) < positive);
+        assert_eq!(speed(1_000.0, args.0, args.1, args.2, args.3), 30_000.0);
     }
 }

@@ -69,7 +69,9 @@ impl Settings {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default());
+                let settings = Self::default();
+                settings.validate()?;
+                return Ok(settings);
             }
             Err(error) => {
                 return Err(ConfigError(format!("{}: {error}", path.display())));
@@ -175,6 +177,23 @@ impl Settings {
                 )));
             }
         }
+        if !(10.0..=1_000.0).contains(&self.tick_hz) {
+            return Err(ConfigError(
+                "TICK_HZ must be between 10 and 1000 ticks per second".to_owned(),
+            ));
+        }
+        // A wheel step uses up to 250 ms of elapsed time. Reject settings
+        // that would overflow its floating-point calculation or i32 event.
+        let units_per_pixel = 120.0 / self.pixels_per_notch;
+        let worst_case_units = self.maximum_px_per_second * units_per_pixel * 0.25;
+        if !units_per_pixel.is_finite()
+            || !worst_case_units.is_finite()
+            || worst_case_units >= f64::from(i32::MAX - 120)
+        {
+            return Err(ConfigError(
+                "MAXIMUM_PX_PER_SECOND and PIXELS_PER_NOTCH produce unsafe wheel events".to_owned(),
+            ));
+        }
         if self.socket_path.is_empty() {
             return Err(ConfigError("SOCKET_PATH must not be empty".to_owned()));
         }
@@ -229,5 +248,34 @@ mod tests {
         let result = Settings::load(&path);
         let _ = fs::remove_file(path);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_unsafe_tick_rates_and_wheel_combinations() {
+        for rate in [f64::MIN_POSITIVE, 9.99, 1_000.01, 1e300] {
+            let settings = Settings {
+                tick_hz: rate,
+                ..Settings::default()
+            };
+            assert!(settings.validate().unwrap_err().0.contains("TICK_HZ"));
+        }
+        for rate in [10.0, 1_000.0] {
+            let settings = Settings {
+                tick_hz: rate,
+                ..Settings::default()
+            };
+            settings.validate().unwrap();
+        }
+        let settings = Settings {
+            pixels_per_notch: f64::MIN_POSITIVE,
+            ..Settings::default()
+        };
+        assert!(
+            settings
+                .validate()
+                .unwrap_err()
+                .0
+                .contains("unsafe wheel events")
+        );
     }
 }

@@ -140,6 +140,7 @@ stage_file 0755 scripts/set-extension-enabled.sh usr/lib/contextscroll/set-exten
 stage_file 0644 gnome-extension/metadata.json usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/metadata.json
 stage_file 0644 gnome-extension/extension.js usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/extension.js
 stage_file 0644 gnome-extension/prefs.js usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/prefs.js
+stage_file 0644 gnome-extension/rule-validation.js usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/rule-validation.js
 stage_file 0644 gnome-extension/icons/autoscroll-cursor.svg usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/autoscroll-cursor.svg
 stage_file 0644 gnome-extension/icons/autoscroll-direction.svg usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/autoscroll-direction.svg
 stage_file 0644 gnome-extension/schemas/org.contextscroll.gschema.xml usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/schemas/org.contextscroll.gschema.xml

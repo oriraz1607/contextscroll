@@ -193,7 +193,7 @@ for module in __init__.py classifier.py context_agent.py pointer.py protocol.py;
 done
 install_payload 0755 usr/lib/contextscroll/set-extension-enabled
 for extension_file in \
-    metadata.json extension.js prefs.js autoscroll-cursor.svg \
+    metadata.json extension.js prefs.js rule-validation.js autoscroll-cursor.svg \
     autoscroll-direction.svg schemas/org.contextscroll.gschema.xml; do
     install_payload 0644 \
         "usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/$extension_file"

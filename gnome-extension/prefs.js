@@ -5,6 +5,7 @@ import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk';
 
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
+import {repairRule, ruleError} from './rule-validation.js';
 
 const MAX_RULES = 128;
 const DECISIONS = ['Native middle-click', 'Autoscroll'];
@@ -28,22 +29,26 @@ function matcherSummary(rule) {
 }
 
 class RulesEditor {
-    constructor(settings, group) {
+    constructor(settings, group, addButton) {
         this._settings = settings;
         this._group = group;
+        this._addButton = addButton;
         this._rows = [];
         this._rules = this._readRules();
         this._rebuild();
     }
 
     _readRules() {
+        this._readError = null;
         try {
             const value = JSON.parse(this._settings.get_string('rules-json'));
-            return Array.isArray(value)
-                ? value.filter(rule => rule && typeof rule === 'object')
-                    .slice(0, MAX_RULES)
-                : [];
-        } catch {
+            if (!Array.isArray(value)) {
+                this._readError = 'Stored rules must be a JSON array';
+                return [];
+            }
+            return value.slice(0, MAX_RULES);
+        } catch (error) {
+            this._readError = `Stored rules are not valid JSON: ${error.message}`;
             return [];
         }
     }
@@ -53,7 +58,7 @@ class RulesEditor {
     }
 
     addRule() {
-        if (this._rules.length >= MAX_RULES)
+        if (this._readError || this._rules.length >= MAX_RULES)
             return;
         this._rules.push({
             enabled: false,
@@ -87,15 +92,80 @@ class RulesEditor {
         this._rebuild();
     }
 
+    _repairRule(index) {
+        this._rules[index] = repairRule(this._rules[index]);
+        this._writeRules();
+        this._rebuild();
+        this._rows[index].expanded = true;
+    }
+
     _rebuild() {
         for (const row of this._rows)
             this._group.remove(row);
         this._rows = [];
+        this._addButton.sensitive = !this._readError &&
+            this._rules.length < MAX_RULES;
+        if (this._readError) {
+            const row = new Adw.ActionRow({
+                title: 'Invalid stored rules',
+                subtitle: this._readError,
+            });
+            const reset = new Gtk.Button({
+                label: 'Reset rules',
+                tooltip_text: 'Replace invalid stored data with an empty rule list',
+                valign: Gtk.Align.CENTER,
+                css_classes: ['destructive-action'],
+            });
+            reset.connect('clicked', () => {
+                this._readError = null;
+                this._rules = [];
+                this._writeRules();
+                this._rebuild();
+            });
+            row.add_suffix(reset);
+            this._rows.push(row);
+            this._group.add(row);
+            return;
+        }
         this._rules.forEach((rule, index) => {
-            const row = this._createRuleRow(rule, index);
+            const error = ruleError(rule);
+            const row = error
+                ? this._createInvalidRuleRow(rule, index, error)
+                : this._createRuleRow(rule, index);
             this._rows.push(row);
             this._group.add(row);
         });
+    }
+
+    _createInvalidRuleRow(rule, index, error) {
+        const row = new Adw.ExpanderRow({
+            title: `Invalid rule ${index + 1}`,
+            subtitle: error,
+        });
+        const original = JSON.stringify(rule);
+        row.add_row(new Adw.ActionRow({
+            title: 'Stored value',
+            subtitle: original.length > 240 ? `${original.slice(0, 240)}…` : original,
+        }));
+        const action = new Adw.ActionRow({
+            title: 'Repair or delete this rule',
+            subtitle: 'Repair keeps valid match fields and disables the rule for review',
+        });
+        const repair = new Gtk.Button({
+            label: 'Repair',
+            valign: Gtk.Align.CENTER,
+        });
+        repair.connect('clicked', () => this._repairRule(index));
+        const remove = new Gtk.Button({
+            label: 'Delete',
+            valign: Gtk.Align.CENTER,
+            css_classes: ['destructive-action'],
+        });
+        remove.connect('clicked', () => this._removeRule(index));
+        action.add_suffix(repair);
+        action.add_suffix(remove);
+        row.add_row(action);
+        return row;
     }
 
     _createRuleRow(rule, index) {
@@ -291,7 +361,7 @@ export default class ContextScrollPreferences extends ExtensionPreferences {
         add.add_suffix(addButton);
         add.activatable_widget = addButton;
         rules.add(add);
-        const editor = new RulesEditor(settings, rules);
+        const editor = new RulesEditor(settings, rules, addButton);
         addButton.connect('clicked', () => editor.addRule());
         page.add(rules);
 
