@@ -155,13 +155,15 @@ classification until a helper is authenticated again.
 
 ## Installation and supply chain
 
-Supported release bundles contain a SHA-256 file manifest and SPDX SBOM. GitHub
-Actions builds the locked dependency graph, compares two builds, creates
-GitHub/Sigstore provenance and SBOM attestations, and publishes complete draft
-releases before immutability is applied.
+Supported release bundles contain a SHA-256 file manifest and SPDX SBOM. Fedora
+RPMs are built from those verified bundles and include the same static daemon,
+session helper, and GNOME extension. GitHub Actions builds the locked dependency
+graph, compares two builds, creates GitHub/Sigstore provenance and SBOM
+attestations for bundles and RPMs, and publishes complete draft releases before
+immutability is applied.
 
-Users must verify the downloaded archive with `gh attestation verify` before
-extracting or executing it. The installer then verifies the bundle manifest,
+Users must verify a downloaded release artifact with `gh attestation verify`
+before installing or executing it. For bundles, the installer verifies the manifest,
 copies a fixed file allowlist into a private root-owned staging directory,
 verifies that snapshot again, and installs from it. The privileged phase does
 not run Cargo, access the network, or execute from the user-writable checkout.

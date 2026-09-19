@@ -101,7 +101,7 @@ desktop_home=$(getent passwd "$desktop_user" | cut -d: -f6)
 }
 user_extension="$desktop_home/.local/share/gnome-shell/extensions/contextscroll-pointer@contextscroll"
 if [[ -e $user_extension || -L $user_extension ]]; then
-    extension_backup="${user_extension}.pre-v0.5.0-backup"
+    extension_backup="${user_extension}.pre-v${expected_version}-backup"
     if [[ -e $extension_backup || -L $extension_backup ]]; then
         echo "Cannot preserve the old user extension: $extension_backup exists." >&2
         exit 1

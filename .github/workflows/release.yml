@@ -45,6 +45,11 @@ jobs:
           rustup default 1.85.0
       - run: shellcheck scripts/*.sh
       - run: ./scripts/test.sh
+      - name: Test RPM packaging
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm libglib2.0-bin
+          ./scripts/test-rpm.sh
 
   build:
     needs: validate
@@ -142,24 +147,39 @@ jobs:
           pattern: bundle-*
           path: dist
           merge-multiple: true
+      - name: Build Fedora RPMs from verified bundles
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y rpm libglib2.0-bin
+          for archive in dist/*.tar.gz; do
+            ./scripts/build-rpm.sh --bundle "$archive" --output dist
+          done
+          for package in dist/*.rpm; do
+            rpm -qpl "$package" | grep -qx '/usr/bin/contextscroll'
+            rpm -qpl "$package" | grep -qx '/usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/rule-validation.js'
+          done
       - name: Create checksums
         run: |
           archive=$(find dist -name '*linux-x86_64.tar.gz' -print -quit)
           root=$(tar -tzf "$archive" | sed -n '1s|/.*||p')
           tar -xOf "$archive" "$root/SBOM.spdx.json" > dist/SBOM.spdx.json
           cd dist
-          sha256sum -- ./*.tar.gz ./SBOM.spdx.json |
+          sha256sum -- ./*.tar.gz ./*.rpm ./SBOM.spdx.json |
             LC_ALL=C sort > SHA256SUMS
       - name: Attest release bundles
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
           subject-path: |
             dist/*.tar.gz
+            dist/*.rpm
             dist/SHA256SUMS
       - name: Attest included SBOM
         uses: actions/attest-sbom@51e74621a501c89df81fc1391c5a8f4cfc9fab2f # v3
         with:
-          subject-path: dist/*.tar.gz
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.rpm
           sbom-path: dist/SBOM.spdx.json
       - name: Create immutable-ready release
         env:

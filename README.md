@@ -173,9 +173,31 @@ sudo apt install acl cargo rustc python3-gi gir1.2-atspi-2.0 at-spi2-core libx11
 
 First stop any other daemon that exclusively grabs the same mouse.
 
-The latest published release is [v0.5.0](https://github.com/oriraz1607/contextscroll/releases/tag/v0.5.0).
-It currently provides GitHub source archives only; there are no prebuilt Linux
-bundles attached. This README describes the current source on `main`.
+The [v0.6.0 release](https://github.com/oriraz1607/contextscroll/releases/tag/v0.6.0)
+provides Fedora RPMs and portable Linux bundles for x86_64 and aarch64.
+This README describes the current source on `main`.
+
+### Fedora RPM
+
+Download the package for your machine, verify its build provenance, and install
+it with DNF:
+
+```bash
+arch=$(uname -m)
+package="contextscroll-0.6.0-1.${arch}.rpm"
+gh release download v0.6.0 --repo oriraz1607/contextscroll --pattern "$package"
+gh attestation verify "$package" --repo oriraz1607/contextscroll
+sudo dnf install "./$package"
+sudo systemctl enable --now contextscroll.service
+systemctl --user enable --now contextscroll-context.service
+```
+
+On GNOME, sign out and back in to load the system extension, then run
+`gnome-extensions enable contextscroll-pointer@contextscroll` if it is not
+already enabled. The RPM preserves `/etc/contextscroll.conf` on upgrades and
+restarts an already running system daemon.
+
+### Source installation
 
 To install the current development version from source:
 
@@ -186,17 +208,17 @@ cd contextscroll
 ```
 
 For an existing checkout, run `./scripts/install.sh --from-source` from its root.
-To install the published **v0.5.0** source instead, check out its tag explicitly:
+To install the **v0.6.0** source instead, check out its tag explicitly:
 
 ```bash
-git clone --branch v0.5.0 --depth 1 \
-  https://github.com/oriraz1607/contextscroll.git contextscroll-v0.5.0
-cd contextscroll-v0.5.0
+git clone --branch v0.6.0 --depth 1 \
+  https://github.com/oriraz1607/contextscroll.git contextscroll-v0.6.0
+cd contextscroll-v0.6.0
 ./scripts/install.sh --from-source
 ```
 
-Future prebuilt bundles must be verified with `gh attestation verify` before
-running downloaded code; see [SECURITY.md](SECURITY.md) for the release trust model.
+Verify downloaded RPMs and bundles with `gh attestation verify` before
+installing them; see [SECURITY.md](SECURITY.md) for the release trust model.
 
 The current installer verifies the bundle manifest when installing a bundle,
 creates a private root-owned snapshot, verifies it again, and installs from that
