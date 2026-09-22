@@ -4,14 +4,12 @@
 [![Release](https://img.shields.io/github/v/release/oriraz1607/contextscroll)](https://github.com/oriraz1607/contextscroll/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Windows-style, context-aware middle-click autoscrolling for Linux on GNOME
-Wayland and X11.**
+# ContextScroll — Middle Mouse Autoscroll for Linux
 
-ContextScroll adds system-wide middle mouse button scrolling while preserving
-normal middle-click actions. It recognizes what is under the pointer: an item
-with a recognizable native middle-click purpose keeps that behavior, while a
-plain page or document surface starts autoscroll. Links still open in new tabs
-and browser tabs still close immediately.
+**Windows-style middle mouse scrolling and middle-click autoscroll for Linux on GNOME Wayland and X11.**
+
+ContextScroll adds system-wide middle mouse autoscrolling to Linux while preserving normal middle-click behavior. Middle-click a page, document, or other scrollable area to start scrolling, while links, browser tabs, buttons, editable fields, and other native middle-click targets continue to work normally.
+
 
 ## Try ContextScroll 0.6.0
 
