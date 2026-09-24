@@ -5,7 +5,7 @@
 ContextScroll adds system-wide middle mouse autoscrolling to Linux while preserving normal middle-click behavior. Middle-click a page, document, or other scrollable area to start scrolling, while links, browser tabs, buttons, editable fields, and other native middle-click targets continue to work normally.
 
 
-## Try ContextScroll 0.6.0
+## Try ContextScroll 0.6.1
 
 ContextScroll supports **GNOME 48+ on Wayland** and Linux desktops running
 **X11**, on x86_64 and aarch64. Fedora users can install from COPR for easy
@@ -30,10 +30,10 @@ Install the runtime dependencies listed below, then:
 
 ```bash
 arch=$(uname -m)
-archive="contextscroll-v0.6.0-linux-${arch}.tar.gz"
-curl -LO "https://github.com/oriraz1607/contextscroll/releases/download/v0.6.0/$archive"
+archive="contextscroll-v0.6.1-linux-${arch}.tar.gz"
+curl -LO "https://github.com/oriraz1607/contextscroll/releases/download/v0.6.1/$archive"
 tar -xzf "$archive"
-cd "contextscroll-v0.6.0-linux-${arch}"
+cd "contextscroll-v0.6.1-linux-${arch}"
 ./scripts/install.sh
 ```
 
@@ -44,9 +44,16 @@ middle-click actions.
 
 For provenance verification, distribution dependencies, source installation,
 and troubleshooting, see [Install](#install). You can also jump straight to
-the [v0.6.0 release and downloads](https://github.com/oriraz1607/contextscroll/releases/tag/v0.6.0).
+the [v0.6.1 release and downloads](https://github.com/oriraz1607/contextscroll/releases/tag/v0.6.1).
 
-### What is new in 0.6.0
+### What is new in 0.6.1
+
+- Fixes the invisible GNOME autoscroll cursor in RPM installations by placing
+  both cursor SVGs at the paths the extension expects.
+- Adds runtime asset and installer-parity checks for release and COPR RPMs on
+  x86_64 and aarch64.
+
+### Included from 0.6.0
 
 - Fedora RPMs and portable bundles for x86_64 and aarch64;
 - smoother speed ramping at the edge of the deadzone;
@@ -230,7 +237,7 @@ systemctl --user enable --now contextscroll-context.service
 On GNOME, sign out and back in after the first installation so Shell can
 discover the extension.
 
-The [v0.6.0 release](https://github.com/oriraz1607/contextscroll/releases/tag/v0.6.0)
+The [v0.6.1 release](https://github.com/oriraz1607/contextscroll/releases/tag/v0.6.1)
 provides Fedora RPMs and portable Linux bundles for x86_64 and aarch64.
 This README describes the current source on `main`.
 
@@ -241,8 +248,8 @@ it with DNF:
 
 ```bash
 arch=$(uname -m)
-package="contextscroll-0.6.0-1.${arch}.rpm"
-gh release download v0.6.0 --repo oriraz1607/contextscroll --pattern "$package"
+package="contextscroll-0.6.1-1.${arch}.rpm"
+gh release download v0.6.1 --repo oriraz1607/contextscroll --pattern "$package"
 gh attestation verify "$package" --repo oriraz1607/contextscroll
 sudo dnf install "./$package"
 sudo systemctl enable --now contextscroll.service
@@ -265,12 +272,12 @@ cd contextscroll
 ```
 
 For an existing checkout, run `./scripts/install.sh --from-source` from its root.
-To install the **v0.6.0** source instead, check out its tag explicitly:
+To install the **v0.6.1** source instead, check out its tag explicitly:
 
 ```bash
-git clone --branch v0.6.0 --depth 1 \
-  https://github.com/oriraz1607/contextscroll.git contextscroll-v0.6.0
-cd contextscroll-v0.6.0
+git clone --branch v0.6.1 --depth 1 \
+  https://github.com/oriraz1607/contextscroll.git contextscroll-v0.6.1
+cd contextscroll-v0.6.1
 ./scripts/install.sh --from-source
 ```
 

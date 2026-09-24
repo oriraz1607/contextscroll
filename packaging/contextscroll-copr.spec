@@ -4,7 +4,7 @@
 %global __os_install_post %{nil}
 
 Name:           contextscroll
-Version:        0.6.0
+Version:        0.6.1
 Release:        1%{?dist}
 Summary:        Context-aware middle-click autoscrolling for Linux
 License:        MIT
@@ -52,8 +52,8 @@ install -D -m 0644 udev/99-contextscroll.rules %{buildroot}/usr/lib/udev/rules.d
 install -D -m 0644 config/contextscroll.conf %{buildroot}/etc/contextscroll.conf
 install -D -m 0644 gnome-extension/metadata.json %{buildroot}/usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/metadata.json
 install -m 0644 gnome-extension/extension.js gnome-extension/prefs.js gnome-extension/rule-validation.js %{buildroot}/usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/
-install -d -m 0755 %{buildroot}/usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/icons
-install -m 0644 gnome-extension/icons/*.svg %{buildroot}/usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/icons/
+# extension.js resolves cursor assets relative to the extension root.
+install -m 0644 gnome-extension/icons/*.svg %{buildroot}/usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/
 install -D -m 0644 gnome-extension/schemas/org.contextscroll.gschema.xml %{buildroot}/usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/schemas/org.contextscroll.gschema.xml
 glib-compile-schemas %{buildroot}/usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/schemas
 install -D -m 0644 gnome-extension/schemas/org.contextscroll.gschema.xml %{buildroot}/usr/share/glib-2.0/schemas/org.contextscroll.gschema.xml
@@ -119,12 +119,15 @@ fi
 /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/extension.js
 /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/prefs.js
 /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/rule-validation.js
-%dir /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/icons
-/usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/icons/*.svg
+/usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/autoscroll-cursor.svg
+/usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/autoscroll-direction.svg
 %dir /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/schemas
 /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/schemas/org.contextscroll.gschema.xml
 /usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/schemas/gschemas.compiled
 
 %changelog
+* Thu Sep 24 2026 oriraz1607 <153127309+oriraz1607@users.noreply.github.com> - 0.6.1-1
+- Install GNOME cursor SVGs at the extension-root paths used at runtime.
+
 * Sat Sep 19 2026 oriraz1607 <153127309+oriraz1607@users.noreply.github.com> - 0.6.0-1
 - Add a COPR-compatible source RPM around the verified release bundles.

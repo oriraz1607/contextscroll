@@ -48,7 +48,7 @@ jobs:
       - name: Test RPM packaging
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm libglib2.0-bin
+          sudo apt-get install -y rpm cpio libglib2.0-bin
           ./scripts/test-rpm.sh
 
   build:
@@ -148,6 +148,12 @@ jobs:
           for package in dist/*.rpm; do
             rpm -qpl "$package" | grep -qx '/usr/bin/contextscroll'
             rpm -qpl "$package" | grep -qx '/usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/rule-validation.js'
+            rpm -qpl "$package" | grep -qx '/usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/autoscroll-cursor.svg'
+            rpm -qpl "$package" | grep -qx '/usr/share/gnome-shell/extensions/contextscroll-pointer@contextscroll/autoscroll-direction.svg'
+            if rpm -qpl "$package" | grep -Eq '/contextscroll-pointer@contextscroll/icons(/|$)'; then
+              echo "Unexpected cursor asset directory in $package" >&2
+              exit 1
+            fi
           done
       - name: Create checksums
         run: |
@@ -177,10 +183,18 @@ jobs:
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
-          gh release create "$RELEASE_TAG" \
-            --draft \
-            --verify-tag \
-            --generate-notes \
-            --title "ContextScroll $RELEASE_TAG"
+          # Preserve a maintainer-created draft and its release notes.
+          if is_draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            test "$is_draft" = true || {
+              echo "Refusing to replace an already published release: $RELEASE_TAG" >&2
+              exit 1
+            }
+          else
+            gh release create "$RELEASE_TAG" \
+              --draft \
+              --verify-tag \
+              --generate-notes \
+              --title "ContextScroll $RELEASE_TAG"
+          fi
           gh release upload "$RELEASE_TAG" dist/* --clobber
           gh release edit "$RELEASE_TAG" --draft=false
